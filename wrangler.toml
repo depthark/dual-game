@@ -1,0 +1,15 @@
+# Cloudflare Pages configuration.
+#
+# The site itself deploys from git; this file exists so the leaderboard
+# Function in `functions/api/` gets its D1 binding. `database_id` is filled in
+# by `wrangler d1 create dual-scores` — it is an account-scoped identifier,
+# not a secret.
+
+name = "dual-game"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-08-20"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dual-scores"
+database_id = "PLACEHOLDER_FILLED_BY_D1_CREATE"

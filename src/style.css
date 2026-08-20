@@ -1322,6 +1322,10 @@ canvas {
   overflow-y: auto;
   scrollbar-width: none;
   pointer-events: auto;
+  /* The global board returns far more rows than the old local one ever did, so
+     the list genuinely scrolls. Fade the bottom edge: without it the clipped
+     row at the boundary reads as a broken layout rather than "more below". */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 32px), transparent);
 }
 #lb-list::-webkit-scrollbar { display: none; }
 

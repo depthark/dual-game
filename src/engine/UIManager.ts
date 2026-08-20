@@ -424,7 +424,7 @@ class UIManager {
   showLeaderboard(name: string, global: boolean): void {
     this.hideAll();
     this.lbNameInput.value = name;
-    this.lbScope.textContent = global ? 'GLOBAL' : 'THIS DEVICE';
+    this.lbScope.textContent = global ? 'GLOBAL' : 'THIS DEVICE';   // corrected on render
     this.lbList.innerHTML = '';
     this.lbStatus.textContent = 'Loading…';
     this.leaderboardUI.classList.remove('ui-hidden');
