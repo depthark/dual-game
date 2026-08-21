@@ -3,7 +3,7 @@ import {
   W, H, HALF, DOT_R, DOT_Y, WALL_H,
   ACCEL, FRICTION, MAX_VEL, TRAIL_LEN,
   SPEED_INITIAL, SPEED_GROWTH, MAX_COMBO_MULTI, BASE_PASS_SCORE, LEVEL_POINTS, ADVANCED_SPEED_MULT,
-  C_BG, C_LEFT, C_RIGHT, HI_SCORE_KEY, HI_LEVEL_KEY,
+  C_BG, C_LEFT, C_RIGHT, HI_SCORE_KEY, HI_LEVEL_KEY, TOTAL_LEVELS,
   THEMES, FLICKER_START_SCORE, FLICKER_INTERVAL_MIN,
   FLICKER_INTERVAL_MAX, FLICKER_DURATION,
   GHOST_RADIUS, INTRO_DURATION, INTRO_SPEED_MULT,
@@ -349,7 +349,7 @@ export class GameScene extends Phaser.Scene {
       music.setLevel(themeIndex + 1);
 
       const theme = THEMES[themeIndex % THEMES.length];
-      uiManager.showBanner(theme.name, themeIndex + 1);
+      uiManager.showBanner(theme.name, this.displayLevel());
     }
 
     /* -- flicker effect -- */
@@ -390,6 +390,17 @@ export class GameScene extends Phaser.Scene {
     uiManager.updateCombo(this.combo);
   }
 
+  /** Player-facing level, 1-indexed and capped at TOTAL_LEVELS.
+   *
+   *  `currentTheme` keeps climbing forever so the palette carries on cycling
+   *  past the last theme, but the level is presented as "n/TOTAL_LEVELS" and
+   *  must not exceed it — an unclamped value printed "LV 11/10" on the
+   *  game-over card, and the leaderboard API rejects any level outside 1-10,
+   *  which silently dropped the scores of anyone past TOTAL_LEVELS * 1000. */
+  private displayLevel(): number {
+    return Math.min(this.currentTheme + 1, TOTAL_LEVELS);
+  }
+
   /* ================================================================ */
   /*  COLLISION                                                       */
   /* ================================================================ */
@@ -418,8 +429,8 @@ export class GameScene extends Phaser.Scene {
       localStorage.setItem(HI_SCORE_KEY, this.score.toString());
     }
 
-    /* save best level (1-indexed) */
-    const levelReached = this.currentTheme + 1;
+    /* save best level (1-indexed, clamped — see displayLevel) */
+    const levelReached = this.displayLevel();
     if (levelReached > this.hiLevel) {
       this.hiLevel = levelReached;
       localStorage.setItem(HI_LEVEL_KEY, levelReached.toString());
