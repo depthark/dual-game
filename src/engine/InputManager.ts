@@ -18,6 +18,11 @@ export class InputManager {
   private rightPrevX = 0;
   private leftKnob:   HTMLElement | null = null;
   private rightKnob:  HTMLElement | null = null;
+  /** ONE HAND mode: a single pointer drives both dots, so there is one
+   *  joystick rather than two. Tracked separately because it accepts a touch
+   *  anywhere on screen, not just on its half. */
+  private singleTouch: Phaser.Input.Pointer | null = null;
+  private singleKnob:  HTMLElement | null = null;
   private keyLeft!:   Phaser.Input.Keyboard.Key;
   private keyRight!:  Phaser.Input.Keyboard.Key;
   private keyA!:      Phaser.Input.Keyboard.Key;
@@ -27,8 +32,9 @@ export class InputManager {
   constructor(scene: Phaser.Scene, advanced = false) {
     this.scene     = scene;
     this.advanced  = advanced;
-    this.leftKnob  = document.getElementById('joystick-left-knob');
-    this.rightKnob = document.getElementById('joystick-right-knob');
+    this.leftKnob   = document.getElementById('joystick-left-knob');
+    this.rightKnob  = document.getElementById('joystick-right-knob');
+    this.singleKnob = document.getElementById('joystick-single-knob');
 
     /* Phaser allocates only 1 touch pointer by default — add a 2nd so
        both thumbs can drive the joysticks simultaneously. */
@@ -44,6 +50,12 @@ export class InputManager {
     scene.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       sfx.init();
       uiManager.stopIntroDemo();
+      if (!this.advanced) {
+        /* One stick: the first finger down owns it and any extra touch is
+           ignored, so a stray second thumb can't fight the first. */
+        if (!this.singleTouch) this.singleTouch = p;
+        return;
+      }
       if (p.x < HALF) {
         this.leftTouch = p;
         this.leftPrevX = p.x;
@@ -54,7 +66,9 @@ export class InputManager {
     });
 
     scene.input.on('pointermove', (p: Phaser.Input.Pointer) => {
-      if (p === this.leftTouch) {
+      if (p === this.singleTouch) {
+        this._setKnob(this.singleKnob, p.x - p.downX);
+      } else if (p === this.leftTouch) {
         this._setKnob(this.leftKnob, p.x - p.downX);
       } else if (p === this.rightTouch) {
         this._setKnob(this.rightKnob, p.x - p.downX);
@@ -62,7 +76,10 @@ export class InputManager {
     });
 
     scene.input.on('pointerup', (p: Phaser.Input.Pointer) => {
-      if (p === this.leftTouch) {
+      if (p === this.singleTouch) {
+        this.singleTouch = null;
+        this._resetKnob(this.singleKnob);
+      } else if (p === this.leftTouch) {
         this.leftTouch = null;
         this._resetKnob(this.leftKnob);
       } else if (p === this.rightTouch) {
@@ -72,9 +89,10 @@ export class InputManager {
     });
 
     scene.input.on('gameout', () => {
-      this.leftTouch = this.rightTouch = null;
+      this.leftTouch = this.rightTouch = this.singleTouch = null;
       this._resetKnob(this.leftKnob);
       this._resetKnob(this.rightKnob);
+      this._resetKnob(this.singleKnob);
     });
   }
 
@@ -86,36 +104,6 @@ export class InputManager {
 
   private _resetKnob(knob: HTMLElement | null): void {
     if (knob) knob.style.transform = 'translate(-50%, -50%)';
-  }
-
-  /** -1..+1 for left dot. Left = negative, right = positive.
-   *  Advanced keyboard: A/D steer the left dot on its own.
-   *  Normal keyboard: arrows/A/D/Space map to spread/gather (mirrored). */
-  leftDir(): number {
-    if (this.advanced) {
-      if (this.keyA.isDown) return -1;
-      if (this.keyD.isDown) return  1;
-    } else {
-      if (this.keyLeft.isDown  || this.keyA.isDown)     return -1;
-      if (this.keyRight.isDown || this.keyD.isDown || this.keySpace.isDown) return 1;
-    }
-    if (!this.leftTouch) return 0;
-    return Math.max(-1, Math.min(1, (this.leftTouch.x - this.leftTouch.downX) / JOYSTICK_MAX));
-  }
-
-  /** -1..+1 for right dot. Left = negative, right = positive.
-   *  Advanced keyboard: ←/→ steer the right dot on its own.
-   *  Normal keyboard: left key mirrors (spread/gather). */
-  rightDir(): number {
-    if (this.advanced) {
-      if (this.keyLeft.isDown)  return -1;
-      if (this.keyRight.isDown) return  1;
-    } else {
-      if (this.keyLeft.isDown  || this.keyA.isDown)     return  1;
-      if (this.keyRight.isDown || this.keyD.isDown || this.keySpace.isDown) return -1;
-    }
-    if (!this.rightTouch) return 0;
-    return Math.max(-1, Math.min(1, (this.rightTouch.x - this.rightTouch.downX) / JOYSTICK_MAX));
   }
 
   /** Advanced mode — how far the LEFT dot should move this frame (game units),
@@ -140,19 +128,27 @@ export class InputManager {
     return dx;
   }
 
-  /** Combined spread / gather command (−1 = full gather, +1 = full spread).
-   *  Uses whichever thumb has the larger spread contribution so a single
-   *  thumb — or one that starts a few ms before the other — drives the
-   *  full mirrored action without desyncing the dots. */
+  /** ONE HAND mode: combined spread / gather command
+   *  (−1 = full gather, +1 = full spread).
+   *
+   *  One stick reads as a width slider: drag RIGHT to push the dots apart,
+   *  LEFT to bring them together. The keyboard matches, so the two input
+   *  methods never disagree about which way is "apart".
+   *
+   *  The touch is tracked from wherever the finger first landed, so the
+   *  on-screen ring is an indicator — the player can drag anywhere. */
   spreadDir(): number {
-    const l = -this.leftDir();   // left thumb pushed LEFT  → spreading → +
-    const r =  this.rightDir();  // right thumb pushed RIGHT → spreading → +
-    return Math.abs(l) >= Math.abs(r) ? l : r;
+    if (this.keyRight.isDown || this.keyD.isDown || this.keySpace.isDown) return  1;
+    if (this.keyLeft.isDown  || this.keyA.isDown)                         return -1;
+    if (!this.singleTouch) return 0;
+    const dx = this.singleTouch.x - this.singleTouch.downX;
+    return Math.max(-1, Math.min(1, dx / JOYSTICK_MAX));
   }
 
   anyPressed(): boolean {
-    return this.leftTouch  !== null ||
-           this.rightTouch !== null ||
+    return this.leftTouch   !== null ||
+           this.rightTouch  !== null ||
+           this.singleTouch !== null ||
            this.anyKeyPressed();
   }
 

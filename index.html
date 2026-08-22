@@ -85,7 +85,8 @@
 
           <div class="sheet-section">
             <div class="sheet-header">CONTROLS</div>
-            <div class="sheet-row">
+            <!-- TWO HANDS -->
+            <div class="sheet-row howto-two">
               <div class="sheet-glyph">
                 <span class="dot dot-cyan"></span>
                 <span class="glyph-bar"></span>
@@ -93,12 +94,28 @@
               </div>
               <div class="sheet-text">thumbs apart → <b>spread</b></div>
             </div>
-            <div class="sheet-row">
+            <div class="sheet-row howto-two">
               <div class="sheet-glyph sheet-glyph-tight">
                 <span class="dot dot-cyan"></span>
                 <span class="dot dot-magenta"></span>
               </div>
               <div class="sheet-text">thumbs together → <b>gather</b></div>
+            </div>
+            <!-- ONE HAND -->
+            <div class="sheet-row howto-one">
+              <div class="sheet-glyph">
+                <span class="dot dot-cyan"></span>
+                <span class="glyph-bar"></span>
+                <span class="dot dot-magenta"></span>
+              </div>
+              <div class="sheet-text">slide right → <b>spread</b></div>
+            </div>
+            <div class="sheet-row howto-one">
+              <div class="sheet-glyph sheet-glyph-tight">
+                <span class="dot dot-cyan"></span>
+                <span class="dot dot-magenta"></span>
+              </div>
+              <div class="sheet-text">slide left → <b>gather</b></div>
             </div>
             <div id="howto-survive">both dots must survive every wall</div>
           </div>
@@ -210,12 +227,18 @@
           <div id="hud-bullet-timer">3.0</div>
           <div id="hud-bullet-icon"></div>
         </div>
-        <!-- Joystick indicators -->
+        <!-- Joystick indicators.
+             TWO HANDS shows the pair (one per dot); ONE HAND shows a single
+             centred stick, because one thumb drives both dots. Which pair is
+             visible is decided by .mode-advanced on #game-hud. -->
         <div id="joystick-left" class="joystick">
           <div class="joystick-knob" id="joystick-left-knob"></div>
         </div>
         <div id="joystick-right" class="joystick">
           <div class="joystick-knob" id="joystick-right-knob"></div>
+        </div>
+        <div id="joystick-single" class="joystick">
+          <div class="joystick-knob" id="joystick-single-knob"></div>
         </div>
       </div>
 
