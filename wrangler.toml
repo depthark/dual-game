@@ -12,4 +12,4 @@ compatibility_date = "2026-08-20"
 [[d1_databases]]
 binding = "DB"
 database_name = "dual-scores"
-database_id = "PLACEHOLDER_FILLED_BY_D1_CREATE"
+database_id = "80681ee0-dbf5-45fc-bb35-3d3628e04ce5"

@@ -19,14 +19,16 @@ echo "==> checking authentication"
 npx wrangler whoami </dev/null
 
 echo "==> ensuring D1 database '$DB_NAME' exists"
-if npx wrangler d1 info "$DB_NAME" </dev/null >/dev/null 2>&1; then
+if npx wrangler d1 list --json </dev/null | jq -e --arg n "$DB_NAME" '.[] | select(.name == $n)' >/dev/null; then
   echo "    already exists — reusing"
 else
   npx wrangler d1 create "$DB_NAME" </dev/null
 fi
 
-# `d1 info --json` is the stable way to read the uuid back out.
-DB_ID="$(npx wrangler d1 info "$DB_NAME" --json </dev/null | jq -r '.uuid')"
+# Read the uuid from the account's database list — `d1 info <name>` resolves
+# the name through wrangler.toml, which still holds the placeholder on a first
+# run and so fails exactly when this script is needed.
+DB_ID="$(npx wrangler d1 list --json </dev/null | jq -r --arg n "$DB_NAME" '.[] | select(.name == $n) | .uuid')"
 [ -n "$DB_ID" ] && [ "$DB_ID" != "null" ] || { echo "could not read database id"; exit 1; }
 echo "    database_id = $DB_ID"
 
@@ -42,7 +44,10 @@ print('    ok')
 PY
 
 echo "==> applying schema to the remote database"
-npx wrangler d1 execute "$DB_NAME" --remote --file=migrations/0001_init.sql </dev/null
+for f in migrations/*.sql; do
+  echo "    $f"
+  npx wrangler d1 execute "$DB_NAME" --remote --file="$f" -y </dev/null
+done
 
 echo
 echo "Done. Next:"
