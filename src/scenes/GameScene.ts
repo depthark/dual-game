@@ -17,7 +17,7 @@ import { ObstaclePool } from '../engine/ObstaclePool';
 import { Renderer, DeathParticle } from '../engine/Renderer';
 import { uiManager } from '../engine/UIManager';
 import { leaderboard } from '../engine/Leaderboard';
-import { store, FREE_LEVELS } from '../engine/Store';
+import { ads } from '../engine/Ads';
 import { achievements } from '../engine/Achievements';
 
 interface Dot {
@@ -77,13 +77,10 @@ export class GameScene extends Phaser.Scene {
   private runBullets!: number;
   private runNearMisses!: number;
 
-  /* paywall — free players are held at the level-6 transition */
-  private paywallOpen!: boolean;
-
   /* death */
   private deathParticles!: DeathParticle[];
   private deathTimer!: number;
-  /** null = the run ended without a crash (declined the paywall) */
+  /** null = the run ended without a crash */
   private deadSide!: 'left' | 'right' | null;
   private goShown!: boolean;
   private retryShown!: boolean;
@@ -143,11 +140,10 @@ export class GameScene extends Phaser.Scene {
     this.speedMult       = INTRO_SPEED_MULT;  // start slow
     this.speedMultTarget = INTRO_SPEED_MULT;
 
-    /* achievements + paywall */
+    /* achievements */
     this.runGhosts     = 0;
     this.runBullets    = 0;
     this.runNearMisses = 0;
-    this.paywallOpen   = false;
 
     /* death */
     this.deathParticles = [];
@@ -174,12 +170,10 @@ export class GameScene extends Phaser.Scene {
     uiManager.showHUD(this.advanced);
 
     /* game-over card actions (re-bound each run — the scene is recreated) */
-    uiManager.onRetry      = () => this.restart();
-    uiManager.onBackToHome = () => this.backToHome();
-    uiManager.onBuyFull       = () => this.buyFromPaywall();
-    uiManager.onPaywallLater  = () => this.declinePaywall();
-    /* unlocked elsewhere while the paywall is up (Ask to Buy, Family Sharing) */
-    store.onChange = (full) => { if (full && this.paywallOpen) this.resumeAfterUnlock(); };
+    /* leaving the card is the one natural break where an ad may show
+       (ads.breakpoint resolves at once when none is due) */
+    uiManager.onRetry      = () => this.leaveGameOver(() => this.restart());
+    uiManager.onBackToHome = () => this.leaveGameOver(() => this.backToHome());
 
     /* start procedural background music (idempotent across restarts) */
     music.setLevel(1);
@@ -199,8 +193,6 @@ export class GameScene extends Phaser.Scene {
       this.updateDeath(delta, time);
       return;
     }
-    /* frozen behind the paywall — nothing moves until the player decides */
-    if (this.paywallOpen) return;
 
     const dt  = delta / 16.667;
 
@@ -367,11 +359,6 @@ export class GameScene extends Phaser.Scene {
 
     /* -- theme transitions every 100 points -- */
     const themeIndex = Math.floor(this.score / LEVEL_POINTS);
-    /* free players stop here: level 6 needs the Full Game unlock */
-    if (themeIndex >= FREE_LEVELS && !store.isFull()) {
-      this.openPaywall();
-      return;
-    }
     if (themeIndex > this.currentTheme) {
       this.currentTheme = themeIndex;
       this.gfx.setTheme(themeIndex);
@@ -499,45 +486,7 @@ export class GameScene extends Phaser.Scene {
       nearMisses: this.runNearMisses,
       twoHands:   this.advanced
     }, this.hiScore);
-  }
-
-  /* ================================================================ */
-  /*  PAYWALL (iOS free players, level 5 → 6)                         */
-  /* ================================================================ */
-  private openPaywall(): void {
-    if (this.paywallOpen) return;
-    this.paywallOpen = true;
-    music.stop();
-    uiManager.updateScore(this.score);   // the frame that crossed 5000 skipped its HUD write
-    uiManager.showPaywall(store.price);
-  }
-
-  private async buyFromPaywall(): Promise<void> {
-    uiManager.setPaywallState(true);
-    const r = await store.purchase();
-    if (!this.paywallOpen) return;           // resolved via store.onChange
-    if (r === 'unlocked') { this.resumeAfterUnlock(); return; }
-    uiManager.setPaywallState(false,
-      r === 'pending'   ? 'Waiting for approval — you can keep this run open.' :
-      r === 'cancelled' ? '' :
-                          'The purchase did not go through. Try again?');
-  }
-
-  /** Same run, same walls: ease back in from a standstill like the intro. */
-  private resumeAfterUnlock(): void {
-    this.paywallOpen = false;
-    uiManager.hidePaywall();
-    this.speedMult       = 0;
-    this.speedMultTarget = this.bulletWallsLeft > 0 ? BULLET_SPEED_MULT : 1;
-    music.start();
-  }
-
-  /** NOT NOW: the run ends here and the score counts as usual. */
-  private declinePaywall(): void {
-    if (!this.paywallOpen) return;
-    this.paywallOpen = false;
-    uiManager.hidePaywall();
-    this.endRun(null);
+    ads.runEnded();
   }
 
   private updateDeath(delta: number, time: number): void {
@@ -554,7 +503,7 @@ export class GameScene extends Phaser.Scene {
     const overlayAlpha = Math.min(0.65, this.deathTimer / 600);
     this.gfx.drawOverlay(overlayAlpha);
 
-    /* surviving dot(s) fade — both when the run ended at the paywall */
+    /* surviving dot(s) fade — both when the run ended without a crash */
     const fade = Math.max(0.3, 1 - this.deathTimer / 2000);
     if (this.deadSide !== 'left') {
       this.gfx.l.dots.fillStyle(C_LEFT, fade);
@@ -598,6 +547,14 @@ export class GameScene extends Phaser.Scene {
     if (this.deathTimer > 1000 && this.input_.anyKeyPressed()) {
       this.restart();
     }
+  }
+
+  /** One tap at a time: a second tap while an ad is up does nothing. */
+  private leaving = false;
+  private leaveGameOver(next: () => void): void {
+    if (this.leaving) return;
+    this.leaving = true;
+    ads.breakpoint().finally(() => { this.leaving = false; next(); });
   }
 
   private restart(): void {

@@ -1,24 +1,25 @@
 /**
- * The one-time "Full Game" unlock (iOS only).
+ * The one-time "Remove Ads" purchase (iOS only).
  *
- * Levels 1–5 are free; the purchase unlocks levels 6–10 in both control
- * modes. Everywhere else — the web/PWA build, or an iOS build without the
- * native plugin — the full game is simply open: there is nothing to sell.
+ * Every level is free for everyone. Free players see a gentle interstitial
+ * ad now and then (see Ads.ts); this purchase turns ads off for good. The
+ * App Store product (`com.lukaschylik.dualmind.fullgame`) launched in 1.1 as
+ * "Full Game", which unlocked levels 6–10 — owners of it are simply ad-free
+ * now, since StoreKit reports the same entitlement.
  *
- * Unlocked when any of these hold:
+ * Everywhere else — the web/PWA build, or an iOS build without the native
+ * plugin — there are no ads and nothing to sell.
+ *
+ * Ad-free when either holds:
  *   • StoreKit reports the purchase (native `Store` plugin, StorePlugin.swift)
- *   • the player first installed 1.0, which shipped every level for free
- *     (decided natively from AppTransaction — see StorePlugin.swift)
  *   • the cached flag says so — StoreKit's entitlement cache works offline,
- *     but this keeps the game open even if a status call fails on launch.
+ *     but this keeps ads off even if a status call fails on launch.
  *
- * No ads, no tracking: Apple runs the purchase and the app never sees any
- * payment detail.
+ * Apple runs the purchase; the app never sees any payment detail.
  */
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { HI_SCORE_KEY } from '../config/constants';
 
-interface StoreStatus { unlocked: boolean; legacy?: boolean; price?: string }
+interface StoreStatus { unlocked: boolean; price?: string }
 
 interface StorePlugin {
   status(): Promise<StoreStatus>;
@@ -29,57 +30,49 @@ interface StorePlugin {
 
 const Native = registerPlugin<StorePlugin>('Store');
 
-/** Cached "full game is open" flag. */
-const FULL_KEY = 'dual_full';
-/** Set once the first 1.1+ launch has looked at legacy progress. */
-const LEGACY_CHECK_KEY = 'dual_legacy_checked';
-
-/** Highest level a player can reach without the unlock. */
-export const FREE_LEVELS = 5;
+/** Cached "ads removed" flag (key kept from 1.1, when it meant "full game"). */
+const AD_FREE_KEY = 'dual_full';
 
 export type PurchaseResult = 'unlocked' | 'cancelled' | 'pending' | 'failed';
 
+type Listener = (adFree: boolean) => void;
+
 class Store {
   private native = false;
-  private full = true;
+  private adFree = true;
+  private listeners: Listener[] = [];
   /** Localised price from the App Store, e.g. "0,95 €". */
   price = '';
-  /** Called whenever the unlock state changes (purchase, restore, family). */
-  onChange?: (full: boolean) => void;
 
   init(): void {
-    if (import.meta.env.DEV && /[?&]paywall\b/.test(location.search)) { this.fake(); return; }
+    if (import.meta.env.DEV && /[?&]ads\b/.test(location.search)) { this.fake(); return; }
     this.native = Capacitor.getPlatform() === 'ios' && Capacitor.isPluginAvailable('Store');
-    if (!this.native) { this.full = true; return; }
+    if (!this.native) { this.adFree = true; return; }
 
-    /* iOS 15 has no AppTransaction: there, a player who already had a best
-       score on the first launch of this version must have played 1.0. */
-    const hadProgress = !localStorage.getItem(LEGACY_CHECK_KEY)
-      && parseInt(localStorage.getItem(HI_SCORE_KEY) || '0', 10) > 0;
-    localStorage.setItem(LEGACY_CHECK_KEY, '1');
-
-    this.full = localStorage.getItem(FULL_KEY) === '1';
-    Native.addListener('unlockChanged', d => { if (d.unlocked) this.setFull(true); });
+    this.adFree = localStorage.getItem(AD_FREE_KEY) === '1';
+    Native.addListener('unlockChanged', d => { if (d.unlocked) this.setAdFree(true); });
     Native.status()
       .then(s => {
         if (s.price) this.price = s.price;
-        const legacy = s.legacy ?? hadProgress;
-        if (s.unlocked || legacy) this.setFull(true);
+        if (s.unlocked) this.setAdFree(true);
       })
       .catch(e => console.warn('[store] status failed', e));
   }
 
-  /** Whether levels past FREE_LEVELS are playable. */
-  isFull(): boolean { return this.full; }
+  /** true = no ads (purchased, or a build that never shows ads). */
+  isAdFree(): boolean { return this.adFree; }
 
   /** Whether this build sells anything (shows the Settings section). */
   sells(): boolean { return this.native; }
+
+  /** Called whenever the purchase state changes (buy, restore, family). */
+  subscribe(fn: Listener): void { this.listeners.push(fn); }
 
   async purchase(): Promise<PurchaseResult> {
     if (!this.native) return 'unlocked';
     try {
       const r = await Native.purchase();
-      if (r.unlocked) { this.setFull(true); return 'unlocked'; }
+      if (r.unlocked) { this.setAdFree(true); return 'unlocked'; }
       return r.pending ? 'pending' : r.cancelled ? 'cancelled' : 'failed';
     } catch (e) {
       console.warn('[store] purchase failed', e);
@@ -87,38 +80,38 @@ class Store {
     }
   }
 
-  /** true = the full game is open after the restore. */
+  /** true = ads are off after the restore. */
   async restore(): Promise<boolean> {
     if (!this.native) return true;
     try {
       const s = await Native.restore();
       if (s.price) this.price = s.price;
-      if (s.unlocked || s.legacy) this.setFull(true);
+      if (s.unlocked) this.setAdFree(true);
     } catch (e) {
       console.warn('[store] restore failed', e);
     }
-    return this.full;
+    return this.adFree;
   }
 
-  /** Dev only (`?paywall`): a locked store whose purchase succeeds after a
-   *  beat — exercises the paywall and Settings row in a desktop browser. */
+  /** Dev only (`?ads`): a store that sells Remove Ads; the fake purchase
+   *  succeeds after a beat. Pairs with the fake ad in Ads.ts. */
   private fake(): void {
     this.native = true;
-    this.full = false;
-    this.price = '0,95\u00a0€';
+    this.adFree = false;
+    this.price = '0,95 €';
     this.purchase = async () => {
       await new Promise(r => setTimeout(r, 700));
-      this.setFull(true);
+      this.setAdFree(true);
       return 'unlocked';
     };
-    this.restore = async () => this.full;
+    this.restore = async () => this.adFree;
   }
 
-  private setFull(full: boolean): void {
-    const changed = full !== this.full;
-    this.full = full;
-    if (full) localStorage.setItem(FULL_KEY, '1');
-    if (changed) this.onChange?.(full);
+  private setAdFree(adFree: boolean): void {
+    const changed = adFree !== this.adFree;
+    this.adFree = adFree;
+    if (adFree) localStorage.setItem(AD_FREE_KEY, '1');
+    if (changed) this.listeners.forEach(fn => fn(adFree));
   }
 }
 

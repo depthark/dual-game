@@ -191,17 +191,20 @@
           </button>
         </div>
 
-        <!-- iOS only: shown when the build sells the Full Game unlock -->
-        <div id="set-full" class="ui-hidden">
+        <!-- iOS only: shown when the build sells Remove Ads -->
+        <div id="set-ads" class="ui-hidden">
           <div class="sheet-divider"></div>
           <div class="settings-section">
             <div class="settings-header">
-              <span>FULL GAME</span>
-              <button id="set-full-restore" class="settings-link" type="button">RESTORE</button>
+              <span>ADS</span>
+              <span class="settings-links">
+                <button id="set-ads-privacy" class="settings-link ui-hidden" type="button">AD PRIVACY</button>
+                <button id="set-ads-restore" class="settings-link" type="button">RESTORE</button>
+              </span>
             </div>
-            <button id="set-full-buy" class="toggle-row" type="button">
-              <span class="toggle-label" id="set-full-label">UNLOCK LEVELS 6–10</span>
-              <span class="set-full-price" id="set-full-price"></span>
+            <button id="set-ads-buy" class="toggle-row" type="button">
+              <span class="toggle-label" id="set-ads-label">REMOVE ADS</span>
+              <span class="set-ads-price" id="set-ads-price"></span>
             </button>
           </div>
         </div>
@@ -274,23 +277,6 @@
       <!-- ═══ POWER-UP PICKUP ALERTS ═══ -->
       <div id="ghost-alert" class="ui-hidden">CAN PASS THROUGH WALL</div>
       <div id="bullet-alert" class="ui-hidden">BULLET TIME!!!</div>
-
-      <!-- ═══ PAYWALL — free players reaching level 6 (iOS only) ═══ -->
-      <div id="paywall-ui" class="ui-hidden">
-        <div id="paywall-scrim"></div>
-        <div id="paywall-sheet">
-          <div class="sheet-grabber"></div>
-          <div id="paywall-kicker">LEVEL 5 CLEARED</div>
-          <div id="paywall-title">KEEP GOING?</div>
-          <div id="paywall-text">
-            Unlock levels 6–10 with one purchase. No ads, no subscription —
-            yours for good, on all your devices.
-          </div>
-          <div id="paywall-msg"></div>
-          <button id="paywall-buy" class="btn-primary" type="button">UNLOCK</button>
-          <button id="paywall-later" class="btn-ghost" type="button">NOT NOW</button>
-        </div>
-      </div>
 
       <!-- ═══ GAME OVER (05) ═══ -->
       <div id="gameover-ui" class="ui-hidden">
