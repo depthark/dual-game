@@ -241,9 +241,11 @@ class CloudflareProvider implements Provider {
 interface GameCenterPlugin {
   authenticate(): Promise<{ authenticated: boolean; playerId: string; alias: string }>;
   submitScore(o: { leaderboardId: string; score: number }): Promise<void>;
+  reportAchievements(o: { achievements: { id: string; percent: number }[] }): Promise<void>;
 }
 
-const GameCenter = registerPlugin<GameCenterPlugin>('GameCenter');
+/** Shared with Achievements.ts — a plugin can only be registered once. */
+export const GameCenter = registerPlugin<GameCenterPlugin>('GameCenter');
 
 /* ------------------------------------------------------------------ */
 /*  FACADE                                                             */
@@ -258,6 +260,8 @@ class Leaderboard {
   /** Last top() had to fall back to the local board. */
   private offline = false;
   private gameCenter = false;
+  /** Resolves once the launch-time Game Center sign-in has an outcome. */
+  private gcReady: Promise<boolean> = Promise.resolve(false);
   private inited = false;
 
   init(): void {
@@ -269,15 +273,17 @@ class Leaderboard {
     this.name = localStorage.getItem(NAME_KEY) || '';
 
     const env = import.meta.env.VITE_LB_API as string | undefined;
-    const api = (env === undefined ? DEFAULT_API : env).trim();
+    /* `bun run dev` never touches the live board unless VITE_LB_API asks for it */
+    const fallback = import.meta.env.DEV ? 'local' : DEFAULT_API;
+    const api = (env === undefined ? fallback : env).trim();
     this.provider = !api || api.toLowerCase() === 'local' ? this.local : new CloudflareProvider(api);
 
     /* iOS app: Game Center sign-in at launch (Apple shows its own banner).
        Optional — declining it changes nothing in the game. */
     if (Capacitor.getPlatform() === 'ios' && Capacitor.isPluginAvailable('GameCenter')) {
-      GameCenter.authenticate()
-        .then(p => { this.gameCenter = p.authenticated; })
-        .catch(e => console.warn('[leaderboard] Game Center sign-in failed', e));
+      this.gcReady = GameCenter.authenticate()
+        .then(p => (this.gameCenter = p.authenticated))
+        .catch(e => { console.warn('[leaderboard] Game Center sign-in failed', e); return false; });
     }
   }
 
@@ -293,6 +299,8 @@ class Leaderboard {
   }
 
   isGlobal(): boolean { return this.provider.global; }
+  /** true once the player is signed in to Game Center (iOS only). */
+  gameCenterReady(): Promise<boolean> { return this.gcReady; }
   getName(): string { return this.name; }
 
   /** Footer line under the board ('' = nothing to say). */

@@ -18,7 +18,8 @@ public class GameCenterPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "authenticate", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "submitScore", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "loadTop", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "loadTop", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "reportAchievements", returnType: CAPPluginReturnPromise)
     ]
 
     /// Calls waiting on the first authentication result. GameKit invokes the
@@ -121,6 +122,34 @@ public class GameCenterPlugin: CAPPlugin, CAPBridgedPlugin {
                 var result: [String: Any] = ["entries": (entries ?? []).map(row)]
                 if let local = local { result["local"] = row(local) }
                 call.resolve(result)
+            }
+        }
+    }
+
+    /// `achievements: [{ id, percent }]` — percent 0…100. Game Center keeps
+    /// the highest value ever reported, so re-sending is harmless; Apple shows
+    /// its own banner when one reaches 100.
+    @objc func reportAchievements(_ call: CAPPluginCall) {
+        guard let items = call.getArray("achievements", JSObject.self), !items.isEmpty else {
+            call.reject("achievements are required")
+            return
+        }
+        guard GKLocalPlayer.local.isAuthenticated else {
+            call.reject("Not signed in to Game Center")
+            return
+        }
+        let achievements: [GKAchievement] = items.compactMap { item in
+            guard let id = item["id"] as? String else { return nil }
+            let a = GKAchievement(identifier: id)
+            a.percentComplete = max(0, min((item["percent"] as? Double) ?? 0, 100))
+            a.showsCompletionBanner = true
+            return a
+        }
+        GKAchievement.report(achievements) { error in
+            if let error = error {
+                call.reject(error.localizedDescription)
+            } else {
+                call.resolve()
             }
         }
     }

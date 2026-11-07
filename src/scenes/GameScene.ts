@@ -17,6 +17,8 @@ import { ObstaclePool } from '../engine/ObstaclePool';
 import { Renderer, DeathParticle } from '../engine/Renderer';
 import { uiManager } from '../engine/UIManager';
 import { leaderboard } from '../engine/Leaderboard';
+import { store, FREE_LEVELS } from '../engine/Store';
+import { achievements } from '../engine/Achievements';
 
 interface Dot {
   x: number;
@@ -70,9 +72,18 @@ export class GameScene extends Phaser.Scene {
   /** Target speed multiplier */
   private speedMultTarget!: number;
 
+  /* per-run counters for the Game Center achievements */
+  private runGhosts!: number;
+  private runBullets!: number;
+  private runNearMisses!: number;
+
+  /* paywall — free players are held at the level-6 transition */
+  private paywallOpen!: boolean;
+
   /* death */
   private deathParticles!: DeathParticle[];
   private deathTimer!: number;
+  /** null = the run ended without a crash (declined the paywall) */
   private deadSide!: 'left' | 'right' | null;
   private goShown!: boolean;
   private retryShown!: boolean;
@@ -132,6 +143,12 @@ export class GameScene extends Phaser.Scene {
     this.speedMult       = INTRO_SPEED_MULT;  // start slow
     this.speedMultTarget = INTRO_SPEED_MULT;
 
+    /* achievements + paywall */
+    this.runGhosts     = 0;
+    this.runBullets    = 0;
+    this.runNearMisses = 0;
+    this.paywallOpen   = false;
+
     /* death */
     this.deathParticles = [];
     this.deathTimer     = 0;
@@ -159,6 +176,10 @@ export class GameScene extends Phaser.Scene {
     /* game-over card actions (re-bound each run — the scene is recreated) */
     uiManager.onRetry      = () => this.restart();
     uiManager.onBackToHome = () => this.backToHome();
+    uiManager.onBuyFull       = () => this.buyFromPaywall();
+    uiManager.onPaywallLater  = () => this.declinePaywall();
+    /* unlocked elsewhere while the paywall is up (Ask to Buy, Family Sharing) */
+    store.onChange = (full) => { if (full && this.paywallOpen) this.resumeAfterUnlock(); };
 
     /* start procedural background music (idempotent across restarts) */
     music.setLevel(1);
@@ -178,6 +199,8 @@ export class GameScene extends Phaser.Scene {
       this.updateDeath(delta, time);
       return;
     }
+    /* frozen behind the paywall — nothing moves until the player decides */
+    if (this.paywallOpen) return;
 
     const dt  = delta / 16.667;
 
@@ -269,6 +292,7 @@ export class GameScene extends Phaser.Scene {
           const edge = o.gapW / 2 - DOT_R;
           if (lD > edge - 6 || rD > edge - 6) {
             o.nearFlag    = true;
+            this.runNearMisses++;
             this.shakeAmt = 3;
             sfx.play('near');
           }
@@ -285,6 +309,7 @@ export class GameScene extends Phaser.Scene {
         if (ldx * ldx + ldy * ldy < gr2 || rdx * rdx + rdy * rdy < gr2) {
           o.ghostCollected = true;
           this.ghostCharges++;
+          this.runGhosts++;
           sfx.playGhost();
           uiManager.updateGhostCharges(this.ghostCharges);
           uiManager.showGhostAlert();
@@ -300,6 +325,7 @@ export class GameScene extends Phaser.Scene {
         const rdy = DOT_Y - o.bulletY;
         if (ldx * ldx + ldy * ldy < br2 || rdx * rdx + rdy * rdy < br2) {
           o.bulletCollected = true;
+          this.runBullets++;
           this.bulletWallsLeft = BULLET_WALL_COUNT;
           this.speedMultTarget = BULLET_SPEED_MULT;
           sfx.play('bullet');
@@ -341,6 +367,11 @@ export class GameScene extends Phaser.Scene {
 
     /* -- theme transitions every 100 points -- */
     const themeIndex = Math.floor(this.score / LEVEL_POINTS);
+    /* free players stop here: level 6 needs the Full Game unlock */
+    if (themeIndex >= FREE_LEVELS && !store.isFull()) {
+      this.openPaywall();
+      return;
+    }
     if (themeIndex > this.currentTheme) {
       this.currentTheme = themeIndex;
       this.gfx.setTheme(themeIndex);
@@ -413,15 +444,36 @@ export class GameScene extends Phaser.Scene {
   /*  DEATH                                                           */
   /* ================================================================ */
   private die(which: 'left' | 'right'): void {
+    this.endRun(which);
+    sfx.play('die');
+    haptics.hit();
+    this.shakeAmt = 10;
+
+    /* burst particles */
+    const dot = which === 'left' ? this.leftDot : this.rightDot;
+    const col = which === 'left' ? C_LEFT : C_RIGHT;
+    this.deathParticles = [];
+    for (let i = 0; i < 24; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 1 + Math.random() * 5;
+      this.deathParticles.push({
+        x: dot.x, y: DOT_Y,
+        vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+        life: 1, color: col
+      });
+    }
+  }
+
+  /** Everything a finished run does, crash or not: stop the world, save the
+   *  bests, submit the score, report achievements. Then updateDeath() takes
+   *  over and shows the game-over card. */
+  private endRun(which: 'left' | 'right' | null): void {
     this.alive    = false;
     this.deadSide = which;
     this.combo    = 0;
     this.gfx.flickering = false;
     this.flickerPhase   = 0;
     music.stop();
-    sfx.play('die');
-    haptics.hit();
-    this.shakeAmt = 10;
 
     /* save high score */
     if (this.score > this.hiScore) {
@@ -440,19 +492,52 @@ export class GameScene extends Phaser.Scene {
        both control setups rank on the same board) */
     leaderboard.submit(this.score, levelReached);
 
-    /* burst particles */
-    const dot = which === 'left' ? this.leftDot : this.rightDot;
-    const col = which === 'left' ? C_LEFT : C_RIGHT;
-    this.deathParticles = [];
-    for (let i = 0; i < 24; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const s = 1 + Math.random() * 5;
-      this.deathParticles.push({
-        x: dot.x, y: DOT_Y,
-        vx: Math.cos(a) * s, vy: Math.sin(a) * s,
-        life: 1, color: col
-      });
-    }
+    achievements.endRun({
+      score:      this.score,
+      ghosts:     this.runGhosts,
+      bullets:    this.runBullets,
+      nearMisses: this.runNearMisses,
+      twoHands:   this.advanced
+    }, this.hiScore);
+  }
+
+  /* ================================================================ */
+  /*  PAYWALL (iOS free players, level 5 → 6)                         */
+  /* ================================================================ */
+  private openPaywall(): void {
+    if (this.paywallOpen) return;
+    this.paywallOpen = true;
+    music.stop();
+    uiManager.updateScore(this.score);   // the frame that crossed 5000 skipped its HUD write
+    uiManager.showPaywall(store.price);
+  }
+
+  private async buyFromPaywall(): Promise<void> {
+    uiManager.setPaywallState(true);
+    const r = await store.purchase();
+    if (!this.paywallOpen) return;           // resolved via store.onChange
+    if (r === 'unlocked') { this.resumeAfterUnlock(); return; }
+    uiManager.setPaywallState(false,
+      r === 'pending'   ? 'Waiting for approval — you can keep this run open.' :
+      r === 'cancelled' ? '' :
+                          'The purchase did not go through. Try again?');
+  }
+
+  /** Same run, same walls: ease back in from a standstill like the intro. */
+  private resumeAfterUnlock(): void {
+    this.paywallOpen = false;
+    uiManager.hidePaywall();
+    this.speedMult       = 0;
+    this.speedMultTarget = this.bulletWallsLeft > 0 ? BULLET_SPEED_MULT : 1;
+    music.start();
+  }
+
+  /** NOT NOW: the run ends here and the score counts as usual. */
+  private declinePaywall(): void {
+    if (!this.paywallOpen) return;
+    this.paywallOpen = false;
+    uiManager.hidePaywall();
+    this.endRun(null);
   }
 
   private updateDeath(delta: number, time: number): void {
@@ -469,12 +554,16 @@ export class GameScene extends Phaser.Scene {
     const overlayAlpha = Math.min(0.65, this.deathTimer / 600);
     this.gfx.drawOverlay(overlayAlpha);
 
-    /* surviving dot fades */
-    const surv = this.deadSide === 'left' ? this.rightDot : this.leftDot;
-    const sCol = this.deadSide === 'left' ? C_RIGHT : C_LEFT;
+    /* surviving dot(s) fade — both when the run ended at the paywall */
     const fade = Math.max(0.3, 1 - this.deathTimer / 2000);
-    this.gfx.l.dots.fillStyle(sCol, fade);
-    this.gfx.l.dots.fillCircle(surv.x + sx, DOT_Y + sy, DOT_R);
+    if (this.deadSide !== 'left') {
+      this.gfx.l.dots.fillStyle(C_LEFT, fade);
+      this.gfx.l.dots.fillCircle(this.leftDot.x + sx, DOT_Y + sy, DOT_R);
+    }
+    if (this.deadSide !== 'right') {
+      this.gfx.l.dots.fillStyle(C_RIGHT, fade);
+      this.gfx.l.dots.fillCircle(this.rightDot.x + sx, DOT_Y + sy, DOT_R);
+    }
 
     /* particles */
     for (const p of this.deathParticles) {

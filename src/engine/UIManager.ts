@@ -76,6 +76,17 @@ class UIManager {
   private setSound!: HTMLElement;
   private setHaptics!: HTMLElement;
   private settingsBack!: HTMLElement;
+  private setFull!: HTMLElement;
+  private setFullBuy!: HTMLElement;
+  private setFullLabel!: HTMLElement;
+  private setFullPrice!: HTMLElement;
+  private setFullRestore!: HTMLElement;
+
+  /* paywall (free players at level 6, iOS only) */
+  private paywallUI!: HTMLElement;
+  private paywallBuy!: HTMLButtonElement;
+  private paywallLater!: HTMLElement;
+  private paywallMsg!: HTMLElement;
 
   /* navigation + settings callbacks (wired by the menu scene) */
   onShowLeaderboard?: () => void;
@@ -90,6 +101,10 @@ class UIManager {
   onHideSettings?: () => void;
   /** true = TWO HANDS (advanced), false = ONE HAND */
   onSelectControl?: (twoHands: boolean) => void;
+  /* Full Game purchase — Settings row + the in-run paywall */
+  onBuyFull?: () => void;
+  onRestoreFull?: () => void;
+  onPaywallLater?: () => void;
   /* game-over actions (wired by the game scene) */
   onRetry?: () => void;
   onBackToHome?: () => void;
@@ -148,6 +163,15 @@ class UIManager {
     this.setSound      = document.getElementById('set-sound')!;
     this.setHaptics    = document.getElementById('set-haptics')!;
     this.settingsBack  = document.getElementById('settings-back')!;
+    this.setFull        = document.getElementById('set-full')!;
+    this.setFullBuy     = document.getElementById('set-full-buy')!;
+    this.setFullLabel   = document.getElementById('set-full-label')!;
+    this.setFullPrice   = document.getElementById('set-full-price')!;
+    this.setFullRestore = document.getElementById('set-full-restore')!;
+    this.paywallUI     = document.getElementById('paywall-ui')!;
+    this.paywallBuy    = document.getElementById('paywall-buy') as HTMLButtonElement;
+    this.paywallLater  = document.getElementById('paywall-later')!;
+    this.paywallMsg    = document.getElementById('paywall-msg')!;
     this.gameoverUI    = document.getElementById('gameover-ui')!;
     this.goTitle       = document.getElementById('go-title')!;
     this.goScore       = document.getElementById('go-score')!;
@@ -176,6 +200,14 @@ class UIManager {
     this.setSound.addEventListener('click', () => this.onToggleMute?.());
     this.setHaptics.addEventListener('click', () => this.onToggleHaptics?.());
     this.settingsBack.addEventListener('click', () => this.onHideSettings?.());
+    this.setFullBuy.addEventListener('click', () => {
+      if (!this.setFullBuy.classList.contains('is-owned')) this.onBuyFull?.();
+    });
+    this.setFullRestore.addEventListener('click', () => this.onRestoreFull?.());
+
+    /* paywall */
+    this.paywallBuy.addEventListener('click', () => this.onBuyFull?.());
+    this.paywallLater.addEventListener('click', () => this.onPaywallLater?.());
 
     /* game over */
     this.goRetry.addEventListener('click', () => this.onRetry?.());
@@ -209,6 +241,7 @@ class UIManager {
     this.settingsUI.classList.add('ui-hidden');
     this.howtoUI.classList.add('ui-hidden');
     this.gameoverUI.classList.add('ui-hidden');
+    this.paywallUI.classList.add('ui-hidden');
   }
 
   /* ------------------------------------------------------------------ */
@@ -269,6 +302,43 @@ class UIManager {
   showSettings(): void {
     this.hideAll();
     this.settingsUI.classList.remove('ui-hidden');
+  }
+
+  /**
+   * The FULL GAME row in Settings. `sells` = false (web, Android) hides the
+   * whole section; `note` temporarily replaces the label (e.g. "NOTHING TO
+   * RESTORE") until the next call.
+   */
+  setFullGame(sells: boolean, owned: boolean, price: string, note = ''): void {
+    this.setFull.classList.toggle('ui-hidden', !sells);
+    this.settingsUI.classList.toggle('has-store', sells);
+    this.setFullBuy.classList.toggle('is-owned', owned);
+    this.setFullRestore.classList.toggle('ui-hidden', owned);
+    this.setFullLabel.textContent = note || (owned ? 'LEVELS 1–10 UNLOCKED' : 'UNLOCK LEVELS 6–10');
+    this.setFullPrice.textContent = owned ? '\u2713' : price;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  PAYWALL (layered over the frozen game)                             */
+  /* ------------------------------------------------------------------ */
+
+  showPaywall(price: string): void {
+    this.paywallBuy.textContent = price ? 'UNLOCK \u00b7 ' + price : 'UNLOCK';
+    this.paywallBuy.disabled = false;
+    this.paywallMsg.textContent = '';
+    this.introHint.classList.add('ui-hidden');
+    this.gameBanner.classList.add('ui-hidden');
+    this.paywallUI.classList.remove('ui-hidden');
+  }
+
+  /** busy = purchase sheet is up; msg = why the last attempt didn't unlock. */
+  setPaywallState(busy: boolean, msg = ''): void {
+    this.paywallBuy.disabled = busy;
+    this.paywallMsg.textContent = msg;
+  }
+
+  hidePaywall(): void {
+    this.paywallUI.classList.add('ui-hidden');
   }
 
   /* ------------------------------------------------------------------ */
