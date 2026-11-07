@@ -2,18 +2,15 @@ import Foundation
 import StoreKit
 import Capacitor
 
-/// StoreKit 2 bridge for the one-time "Full Game" unlock (levels 6–10).
+/// StoreKit 2 bridge for the one-time "Remove Ads" purchase.
 ///
 /// An app-local Capacitor plugin like `GameCenterPlugin`: registered by
 /// `MainViewController`, called from `src/engine/Store.ts` as
 /// `registerPlugin('Store')`. Apple handles the whole purchase, so the app
-/// never sees payment details and no third-party SDK is involved.
+/// never sees payment details.
 ///
-/// Players who first installed DUAL 1.0 (build 9 or earlier) got all ten
-/// levels for free and keep them: `AppTransaction.originalAppVersion` is the
-/// CFBundleVersion of the build they first downloaded. Only trusted in the
-/// production environment — in TestFlight and Xcode it is always "1.0", which
-/// would otherwise grandfather every tester and hide the paywall.
+/// The product ID dates from 1.1, when the same purchase was sold as
+/// "Full Game" (levels 6–10); its owners are ad-free now.
 @objc(StorePlugin)
 public class StorePlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "StorePlugin"
@@ -25,8 +22,6 @@ public class StorePlugin: CAPPlugin, CAPBridgedPlugin {
     ]
 
     static let productId = "com.lukaschylik.dualmind.fullgame"
-    /// Last build number of version 1.0, which shipped with every level free.
-    static let lastFreeBuild = 9
 
     private var updates: Task<Void, Never>?
 
@@ -58,16 +53,6 @@ public class StorePlugin: CAPPlugin, CAPBridgedPlugin {
         return false
     }
 
-    /// nil = could not tell (iOS 15, or App Store unreachable on first launch).
-    static func isLegacyPlayer() async -> Bool? {
-        guard #available(iOS 16.0, *) else { return nil }
-        guard let result = try? await AppTransaction.shared,
-              case .verified(let app) = result else { return nil }
-        guard app.environment == .production else { return false }
-        guard let build = Double(app.originalAppVersion) else { return nil }
-        return build <= Double(lastFreeBuild)
-    }
-
     private func product() async throws -> Product {
         let products = try await Product.products(for: [StorePlugin.productId])
         guard let p = products.first else {
@@ -79,14 +64,13 @@ public class StorePlugin: CAPPlugin, CAPBridgedPlugin {
 
     private func statusPayload() async -> [String: Any] {
         var out: [String: Any] = ["unlocked": await StorePlugin.ownsFullGame()]
-        if let legacy = await StorePlugin.isLegacyPlayer() { out["legacy"] = legacy }
         if let p = try? await product() { out["price"] = p.displayPrice }
         return out
     }
 
     // MARK: - plugin methods
 
-    /// { unlocked, legacy?, price? }
+    /// { unlocked, price? }
     @objc func status(_ call: CAPPluginCall) {
         Task { call.resolve(await self.statusPayload()) }
     }

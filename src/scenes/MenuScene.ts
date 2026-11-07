@@ -5,6 +5,7 @@ import { haptics } from '../engine/Haptics';
 import { uiManager } from '../engine/UIManager';
 import { leaderboard } from '../engine/Leaderboard';
 import { store } from '../engine/Store';
+import { ads } from '../engine/Ads';
 
 /**
  * Home screen and everything reachable from it: the how-to sheet, settings,
@@ -18,6 +19,13 @@ import { store } from '../engine/Store';
  * existing `advanced` flag. `advanced = true` is "TWO HANDS" (each thumb its
  * own dot), `advanced = false` is "ONE HAND" (mirrored spread/gather).
  */
+/** The scene is recreated on every return home; subscribe to the store once. */
+let subscribed = false;
+
+function refreshRemoveAds(note = ''): void {
+  uiManager.setRemoveAds(store.sells(), store.isAdFree(), store.price, ads.privacyOptions, note);
+}
+
 export class MenuScene extends Phaser.Scene {
   private twoHands = true;
 
@@ -54,7 +62,7 @@ export class MenuScene extends Phaser.Scene {
     /* ---- settings ---- */
     uiManager.onShowSettings = () => {
       sfx.init();
-      this.refreshFullGame();
+      refreshRemoveAds();
       uiManager.showSettings();
     };
     uiManager.onHideSettings = () => this.backToMenu(hiScore, hiLevel);
@@ -64,17 +72,18 @@ export class MenuScene extends Phaser.Scene {
       uiManager.setControlMode(twoHands);
     };
 
-    /* ---- full game (iOS) — buy / restore from Settings ---- */
-    uiManager.onBuyFull = () => {
-      uiManager.setFullGame(true, false, store.price, 'OPENING APP STORE…');
-      store.purchase().then(r => this.refreshFullGame(
+    /* ---- remove ads (iOS) — buy / restore / ad privacy from Settings ---- */
+    uiManager.onBuyRemoveAds = () => {
+      refreshRemoveAds('OPENING APP STORE…');
+      store.purchase().then(r => refreshRemoveAds(
         r === 'pending' ? 'WAITING FOR APPROVAL' : r === 'failed' ? 'PURCHASE FAILED' : ''));
     };
-    uiManager.onRestoreFull = () => {
-      uiManager.setFullGame(true, store.isFull(), store.price, 'RESTORING…');
-      store.restore().then(full => this.refreshFullGame(full ? '' : 'NOTHING TO RESTORE'));
+    uiManager.onRestoreRemoveAds = () => {
+      refreshRemoveAds('RESTORING…');
+      store.restore().then(adFree => refreshRemoveAds(adFree ? '' : 'NOTHING TO RESTORE'));
     };
-    store.onChange = () => this.refreshFullGame();
+    uiManager.onAdPrivacy = () => { void ads.showPrivacyOptions(); };
+    if (!subscribed) { subscribed = true; store.subscribe(() => refreshRemoveAds()); }
 
     /* ---- leaderboard ---- */
     uiManager.onShowLeaderboard = () => this.openLeaderboard();
@@ -93,10 +102,6 @@ export class MenuScene extends Phaser.Scene {
       uiManager.setHapticsLabel(muted);
       if (!muted) haptics.pass();  // let the player feel what they just enabled
     };
-  }
-
-  private refreshFullGame(note = ''): void {
-    uiManager.setFullGame(store.sells(), store.isFull(), store.price, note);
   }
 
   private openLeaderboard(): void {

@@ -6,6 +6,7 @@ import { uiManager } from './engine/UIManager';
 import { leaderboard } from './engine/Leaderboard';
 import { store } from './engine/Store';
 import { achievements } from './engine/Achievements';
+import { ads } from './engine/Ads';
 import { HI_SCORE_KEY } from './config/constants';
 
 /* ---- Launch Phaser ---- */
@@ -31,8 +32,10 @@ uiManager.init();
 /* ---- Leaderboard (device login happens lazily) ---- */
 leaderboard.init();
 
-/* ---- Full Game unlock (iOS; the web build is always full) ---- */
+/* ---- Remove Ads purchase + ads (iOS only; the web build has neither).
+       Store first: ads stay off for anyone who bought Remove Ads. ---- */
 store.init();
+void ads.init();
 
 /* ---- Game Center achievements — credits the stored best retroactively ---- */
 achievements.init(parseInt(localStorage.getItem(HI_SCORE_KEY) || '0', 10));

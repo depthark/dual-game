@@ -10,7 +10,7 @@ Capacitor shell.
 - [Leaderboard](#leaderboard)
 - [Database](#database)
 - [Game Center achievements](#game-center-achievements)
-- [Full Game unlock (in-app purchase)](#full-game-unlock-in-app-purchase)
+- [Ads and Remove Ads (iOS)](#ads-and-remove-ads-ios)
 - [Privacy](#privacy)
 - [Releasing](#releasing)
 
@@ -29,7 +29,7 @@ Dev-only switches:
 
 | URL / env | Effect |
 |---|---|
-| `?paywall` | Fakes a locked iOS store in the browser: Settings shows FULL GAME and the paywall appears at level 6. The fake purchase succeeds after 0.7 s. |
+| `?ads` | Fakes the iOS ads + store in the browser: Settings shows ADS / REMOVE ADS, and a 1.5 s grey "TEST AD" overlay stands in for an interstitial (same frequency rules). The fake purchase succeeds after 0.7 s. |
 | `VITE_LB_API=http://localhost:8788/api/scores` | Point `bun run dev` at a local Pages Function (`bunx wrangler pages dev dist --port 8788`). |
 | `VITE_LB_API=local` | Force the on-device board in any build. |
 
@@ -45,6 +45,7 @@ flowchart LR
     subgraph iOS["iOS app only (Capacitor)"]
       GCP["GameCenterPlugin.swift"]
       SP["StorePlugin.swift<br/>StoreKit 2"]
+      AM["AdMob plugin<br/>Google Mobile Ads + UMP"]
     end
   end
   subgraph CF["Cloudflare Pages"]
@@ -53,7 +54,8 @@ flowchart LR
     D1[("D1 database<br/>dual-scores")]
   end
   GC["Apple Game Center<br/>leaderboard + achievements"]
-  AS["App Store<br/>Full Game purchase"]
+  AS["App Store<br/>Remove Ads purchase"]
+  GA["Google AdMob<br/>non-personalized ads"]
 
   Game <--> LS
   Game -- "GET / POST / PUT (JSON)" --> Fn
@@ -61,13 +63,15 @@ flowchart LR
   Site -. serves .-> Game
   Game --> GCP --> GC
   Game --> SP --> AS
+  Game --> AM --> GA
 ```
 
 | Module | Job |
 |---|---|
 | `src/engine/Leaderboard.ts` | Global board client (Cloudflare), offline fallback to the on-device board, Game Center score mirror |
 | `src/engine/Achievements.ts` | Decides which Game Center achievements a run earned and reports them |
-| `src/engine/Store.ts` | Whether levels 6–10 are open; buy / restore through StoreKit |
+| `src/engine/Store.ts` | Whether ads are removed; buy / restore through StoreKit |
+| `src/engine/Ads.ts` | Consent, frequency rules, showing an interstitial at a break |
 | `functions/api/scores.ts` | The leaderboard API (validation, upsert, ranking) |
 | `ios/App/App/*Plugin.swift` | App-local Capacitor plugins: Game Center and StoreKit |
 
@@ -87,7 +91,7 @@ sequenceDiagram
   participant D as D1
   participant GC as Game Center (iOS)
 
-  Note over G: run ends (crash, or NOT NOW at the paywall)
+  Note over G: run ends
   G->>L: submit(score, level)
   L->>LS: local board: keep max(score)
   opt signed in to Game Center
@@ -244,59 +248,71 @@ sequenceDiagram
 - Not signed in to Game Center? Nothing is reported or cached, and it is tried
   again next launch / run.
 
-## Full Game unlock (in-app purchase)
+## Ads and Remove Ads (iOS)
 
-DUAL is free with no ads and no tracking. Levels 1–5 are free in both control
-modes; a one-time non-consumable purchase, `com.lukaschylik.dualmind.fullgame`
-("Full Game", $0.95 / €0.95 / 25 Kč, Family Sharing on), opens levels 6–10.
-The web build has no store and is always the full game. The product is created
-by [`scripts/setup-full-game.py`](scripts/setup-full-game.py).
+Every level is free for everyone. The free iOS app shows an occasional
+full-screen ad; a one-time purchase, **Remove Ads**
+(`com.lukaschylik.dualmind.fullgame`, $0.95 / €0.95 / 25 Kč, Family Sharing on),
+turns them off for good. The web build has no ads and sells nothing.
+
+The product ID still says `fullgame` because 1.1 sold the same purchase as
+"Full Game" (levels 6–10 behind a paywall at 5,000 points). 1.2 dropped the
+paywall; anyone who bought it in 1.1 is simply ad-free.
+
+**Ads are gentle by design** (`src/engine/Ads.ts`):
+
+| Rule | Value |
+|---|---|
+| Format | Interstitial only, image (no video) — no banners, nothing during a run |
+| When | Only when the player leaves the game-over card (TRY AGAIN / BACK TO HOME) |
+| First ad | Not before the player has finished `FREE_RUNS` = 5 runs |
+| Spacing | At least `RUNS_BETWEEN` = 3 runs **and** `MIN_GAP_MS` = 3 minutes since the last ad |
+| Targeting | Always non-personalized (`npa`); no App Tracking Transparency prompt, no IDFA |
+| Content | Max rating "General"; sensitive categories blocked in the AdMob console |
+| Consent | Google UMP form before the first request where the law needs it (EEA, UK, CH); Settings → ADS → AD PRIVACY reopens it |
 
 ```mermaid
-stateDiagram-v2
-  [*] --> Launch
-  Launch --> Full: web / Android build (nothing to sell)
-  Launch --> Check: iOS
-  Check --> Full: StoreKit entitlement owned
-  Check --> Full: first installed 1.0 (build ≤ 9)
-  Check --> Free: otherwise
-  Free --> Paywall: score reaches 5,000 (level 6)
-  Paywall --> Full: UNLOCK → purchase succeeds (same run continues)
-  Paywall --> GameOver: NOT NOW (score counts as usual)
-  Paywall --> Paywall: cancelled / failed / waiting for Ask to Buy
-  Free --> Full: Settings → FULL GAME → buy or RESTORE
-  Full --> [*]
+flowchart TD
+  L["Launch"] --> S{"Remove Ads owned?<br/>(StoreKit or cached)"}
+  S -- yes --> N["No ads — AdMob never started"]
+  S -- no --> C["UMP consent info<br/>(form if required)"]
+  C --> R{"canRequestAds?"}
+  R -- no --> N
+  R -- yes --> I["AdMob.initialize<br/>maxAdContentRating = General"]
+  I --> P["preload interstitial (npa)"]
+  P --> GO["run ends → game-over card"]
+  GO --> T["player taps TRY AGAIN / BACK TO HOME"]
+  T --> D{"runs ≥ 5 and<br/>≥ 3 runs and ≥ 3 min<br/>since last ad?"}
+  D -- no --> NEXT["continue at once"]
+  D -- yes --> AD["show interstitial"] --> NEXT
+  AD --> P
 ```
 
-- **Paywall:** at the level 5→6 transition the run freezes under a sheet.
-  UNLOCK opens Apple's purchase sheet; on success the paywall closes and the
-  same run eases back to speed. NOT NOW ends the run like a crash would: best
-  score saved, leaderboard and achievements updated, game-over card shown at
-  LV 5/10.
-- **1.0 players keep everything:** 1.0 shipped all ten levels for free. On
-  iOS 16+ `AppTransaction.originalAppVersion` (the build number first
-  installed) decides: ≤ 9 means a 1.0 player. This is trusted only in the
-  production environment, because TestFlight and Xcode always report "1.0",
-  which would hide the paywall from testers. On iOS 15, which has no
-  AppTransaction, a player who already had a best score on the first launch
-  of 1.1 counts as a 1.0 player.
-- **Offline:** StoreKit's entitlement cache works offline, and `dual_full` in
-  `localStorage` remembers an unlock in case a status call fails.
-- **Ask to Buy / Family Sharing / other devices:** `Transaction.updates` is
-  observed from launch. If an unlock arrives while the paywall is open, the
-  run resumes by itself.
-- **Restore:** Settings → FULL GAME → RESTORE runs `AppStore.sync()`.
-
-`localStorage` keys used by the store: `dual_full` (cached unlock),
-`dual_legacy_checked` (the iOS 15 first-launch check ran).
+- **Ad unit:** set `VITE_ADMOB_INTERSTITIAL_IOS` when building for release.
+  Without it the build requests Google's demo ads (`isTesting`), which is what
+  TestFlight builds should do.
+- **App ID:** the Xcode build setting `ADMOB_APP_ID` (feeds
+  `GADApplicationIdentifier` in `Info.plist`); it defaults to Google's demo
+  app ID.
+- **Buying while ads are on:** `Store.subscribe` turns ads off immediately.
+  Ask to Buy, Family Sharing and other devices arrive through
+  `Transaction.updates`.
+- **Restore:** Settings → ADS → RESTORE runs `AppStore.sync()`.
+- `localStorage` keys: `dual_full` (cached "ads removed", name kept from
+  1.1), `dual_runs` (finished runs), `dual_last_ad_run` (value of
+  `dual_runs` at the last ad).
 
 ## Privacy
 
-Anonymity is a design rule: no accounts, no email, no advertising ID, no ads,
-no analytics. The leaderboard stores a random device UUID, a nickname, a best
+Anonymity is a design rule: no accounts, no email, no advertising ID, no
+analytics, no tracking. The one exception to "no third parties" is Google
+AdMob in the free iOS app, always non-personalized and never started for
+players who removed ads. The leaderboard stores a random device UUID, a nickname, a best
 score and a level; the server keeps no IP addresses. Game Center and in-app
 purchases are handled by Apple under the player's Apple ID, and the app never
-sees payment details. Policy: [`public/privacy/`](public/privacy/index.html).
+sees payment details. The App Store privacy answers for 1.2+ must declare the
+data Google's SDK collects for advertising (not linked to identity, not used
+for tracking). Policy: [`public/privacy/`](public/privacy/index.html).
 Changing any of this means updating that page and the App Store privacy
 answers together.
 
@@ -312,6 +328,6 @@ answers together.
 - **App Store Connect setup scripts** (same env vars, safe to re-run; they use
   `scripts/asc.py`, which needs `pip install pyjwt cryptography`):
   - `python3 scripts/setup-achievements.py`
-  - `python3 scripts/setup-full-game.py [--screenshot paywall.png]`
+  - `python3 scripts/setup-full-game.py [--screenshot shot.png]` (creates the product; rename to "Remove Ads" in App Store Connect)
 - New achievements and the in-app purchase go live only once they are attached
   to an app version that passes review.
