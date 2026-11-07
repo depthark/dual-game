@@ -251,7 +251,10 @@ class UIManager {
   /*  Layered over the menu \u2014 the menu stays visible behind the scrim.   */
   /* ------------------------------------------------------------------ */
 
-  showHowto(): void {
+  /** `twoHands` selects which CONTROLS rows the sheet shows — the gesture
+   *  differs between the modes, so showing both would be noise. */
+  showHowto(twoHands = true): void {
+    this.howtoUI.classList.toggle('mode-one-hand', !twoHands);
     this.howtoUI.classList.remove('ui-hidden');
   }
 
@@ -285,7 +288,7 @@ class UIManager {
     this.gameHUD.classList.toggle('mode-advanced', advanced);
     this.introLabel.textContent = advanced
       ? 'EACH THUMB → ITS OWN DOT'
-      : 'SLIDE THUMBS ← →';
+      : 'SLIDE ← GATHER · SPREAD →';
     this.introHint.classList.remove('ui-hidden', 'intro-fading');
     /* clear any leftover popups from a previous run */
     this.scorePopups.textContent = '';
@@ -424,7 +427,7 @@ class UIManager {
   showLeaderboard(name: string, global: boolean): void {
     this.hideAll();
     this.lbNameInput.value = name;
-    this.lbScope.textContent = global ? 'GLOBAL' : 'THIS DEVICE';
+    this.lbScope.textContent = global ? 'GLOBAL' : 'THIS DEVICE';   // corrected on render
     this.lbList.innerHTML = '';
     this.lbStatus.textContent = 'Loading…';
     this.leaderboardUI.classList.remove('ui-hidden');

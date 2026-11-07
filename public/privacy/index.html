@@ -72,9 +72,9 @@
   tracking.</strong> The only data that leaves your device is what the global leaderboard
   needs: a random ID for your device, the nickname you choose, and your best score.</p>
 
-  <h2>The global leaderboard (PlayFab)</h2>
-  <p>The leaderboard is hosted by <strong>Microsoft Azure PlayFab</strong>, a game backend
-  service. When you play, the app sends PlayFab:</p>
+  <h2>The global leaderboard</h2>
+  <p>The leaderboard runs on the developer's own small server, hosted by
+  <strong>Cloudflare</strong>. When a run ends, the app sends it four things:</p>
   <ul>
     <li>a <strong>random identifier</strong> generated on your device the first time you open
     the app &mdash; it is not your name, Apple ID, phone number, or any advertising identifier,
@@ -82,13 +82,18 @@
     <li>the <strong>nickname</strong> you type on the leaderboard screen (or an automatic
     &ldquo;Player-XXXX&rdquo; name if you don't enter one) &mdash; it is shown publicly next to
     your score, so don't use your real name if you'd rather not;</li>
-    <li>your <strong>best score</strong>.</li>
+    <li>your <strong>best score</strong> and the <strong>level</strong> you reached.</li>
   </ul>
-  <p>Like any internet service, PlayFab also receives your IP address as part of the connection.
-  PlayFab processes this data on the developer's behalf under the
-  <a href="https://privacy.microsoft.com/privacystatement">Microsoft Privacy Statement</a>.
-  It is used only to run the leaderboard &mdash; never for advertising, never sold, and never
-  used to track you across other apps or websites.</p>
+  <p>That is the whole message. The server does <strong>not</strong> log your IP address and
+  stores nothing else alongside your score. The data is used only to run the leaderboard
+  &mdash; never for advertising, never sold, and never used to track you across other apps or
+  websites.</p>
+  <p>Version 1.0 of the iPhone and iPad app sent the same items (random identifier,
+  nickname, best score) to <strong>Microsoft Azure PlayFab</strong> instead, which processed
+  them on the developer's behalf under the
+  <a href="https://privacy.microsoft.com/privacystatement">Microsoft Privacy Statement</a>
+  and, like any internet service, received your IP address as part of the connection. Later
+  versions no longer use PlayFab.</p>
   <p>If you play without an internet connection, the game simply shows the scores saved on
   your device.</p>
 
@@ -109,6 +114,7 @@
     <li>No email address, phone number, or contact information</li>
     <li>No location data</li>
     <li>No advertising identifier (IDFA) and no tracking</li>
+    <li>No IP address logging on the leaderboard server</li>
     <li>No usage or diagnostic analytics</li>
     <li>No photos, contacts, microphone, or camera access &mdash; the app requests no permissions</li>
   </ul>
@@ -116,6 +122,11 @@
   <h2>Deleting your leaderboard entry</h2>
   <p>Email <a href="mailto:chylik.lukas@gmail.com">chylik.lukas@gmail.com</a> with your
   nickname and we will remove your entry and its data from the leaderboard.</p>
+
+  <h2>Third parties</h2>
+  <p>The app contains no third-party analytics, advertising, or tracking SDKs. The
+  leaderboard runs on the developer's own server hosted by Cloudflare; no data is shared
+  with anyone else.</p>
 
   <h2>Children</h2>
   <p>The app is suitable for all ages. It asks for no personal information; children should

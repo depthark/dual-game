@@ -1,58 +1,56 @@
 /**
- * Leaderboard — no backend of our own, no paid API.
+ * Leaderboard — one global board on our own Cloudflare Pages Function + D1.
  *
- * The board players see is ONE global board on PlayFab, shared by every
- * platform (iPhone/iPad app, web, Android). The player only types a nickname;
- * there is no login screen.
+ * The board players see is ONE global board shared by every platform
+ * (iPhone/iPad app, web, Android). The player only types a nickname; there is
+ * no login screen and no account.
  *
- *   • PlayFabProvider — the global board. Anonymous, invisible device login
- *                       (Client/LoginWithCustomID keyed by a random per-device
- *                       UID), nickname = PlayFab title display name, score =
- *                       the `HighScore` statistic (aggregation Max) feeding the
- *                       linked `HighScore` leaderboard. Uses PlayFab's newer
- *                       Statistics/Leaderboards ("Progression") APIs — titles
- *                       created after 2024 can't use the legacy Client
- *                       statistics endpoints (they fail with
- *                       ProductDisabledForTitle). Client REST only: the Title
- *                       ID is public, there is NO secret key in the bundle.
+ *   • CloudflareProvider — the global board. Talks to `functions/api/scores.ts`
+ *                          (deployed with the site), backed by one D1 table.
+ *                          No third-party SDK and no key in the bundle.
  *
- *   • LocalProvider   — this device only (localStorage). Used when no Title ID
- *                       is configured, and as the fallback whenever PlayFab
- *                       can't be reached, so the game never blocks on it.
- *                       Every score is also always written here.
+ *   • LocalProvider      — this device only (localStorage). Used when the API
+ *                          URL is blanked out, and as the fallback whenever
+ *                          the global board can't be reached, so the game
+ *                          never blocks on it. Every score is also always
+ *                          written here.
  *
- *   • Game Center     — iOS bonus, not a board of its own in the game: when the
- *                       player is signed in, each score is also submitted to the
- *                       Game Center leaderboard so it shows in Apple's Games app
- *                       next to their friends. App-local plugin
- *                       (ios/App/App/GameCenterPlugin.swift).
+ *   • Game Center        — iOS bonus, not a board of its own in the game: when
+ *                          the player is signed in, each score is also
+ *                          submitted to the Game Center leaderboard so it shows
+ *                          in Apple's Games app next to their friends.
+ *                          App-local plugin (ios/App/App/GameCenterPlugin.swift).
+ *
+ * (Builds up to 1.0 used PlayFab. Its free tier is capped at 1,000 lifetime
+ * player accounts, and this app creates one per device, so the board moved to
+ * infrastructure the site already runs on.)
  *
  * ONE SHARED BOARD: both control setups (TWO HANDS / ONE HAND) rank together —
  * a device owns exactly one row, its best score whichever way it was played.
  * `LocalProvider.load()` folds rows from the older split Normal/Advanced
  * boards into one.
  *
- * Identity & anti-overwrite ("aby si ľudia neprepisovali skóre"):
- *   - Every device gets one stable random UID (localStorage); all writes are
- *     keyed by it, so a device owns exactly one row and can't touch another's.
- *   - Only a *higher* score is ever kept: max() locally, and the PlayFab
- *     statistic column aggregates with Max, so the server keeps the best.
- *   - PlayFab enforces unique display names, so nobody can take your nickname.
+ * Identity & anti-overwrite:
+ *   - Every device gets one stable random UID (localStorage). That UID is the
+ *     whole identity: no account, no email, no ad identifier, and the server
+ *     stores no IP address. Writes are keyed by it, so a device owns exactly
+ *     one row and can't touch another's.
+ *   - Only a *higher* score is ever kept: max() locally, and the server upsert
+ *     is `MAX(scores.score, excluded.score)`.
+ *   - Nicknames are unique on the server, so nobody can take yours.
  *
- * NOTE: a fully cheat-proof board needs server-side validation (PlayFab
- * CloudScript / a real backend). Out of scope by request — a determined
- * player can still post a fake score from their own device.
+ * NOTE: any client-submitted score is forgeable in principle. The Function
+ * rejects values the real game can't produce (non-multiples of 10, levels
+ * outside 1-10, absurd totals) — that stops casual tampering, not a
+ * determined attacker.
  */
 
 import { Capacitor, registerPlugin } from '@capacitor/core';
 
-/** PlayFab title (public — it ships in every client, it is not a secret).
- *  Override with VITE_PLAYFAB_TITLE_ID; set it to "local" for a device-only board. */
-const DEFAULT_PLAYFAB_TITLE_ID = '1095E4';
-
-/** PlayFab statistic + linked leaderboard (both named `HighScore`; the stat
- *  has one column, "Score", aggregation Max). */
-const STAT_NAME = 'HighScore';
+/** Where the global board lives. Override with VITE_LB_API (a preview
+ *  deployment, `wrangler pages dev` on localhost); set it to "" or "local"
+ *  for a device-only board. */
+const DEFAULT_API = 'https://dual-game.pages.dev/api/scores';
 
 const UID_KEY   = 'dual_uid';
 const NAME_KEY  = 'dual_name';
@@ -63,7 +61,7 @@ const LOCAL_KEY = 'dual_lb';
 const GC_LEADERBOARD_ID = 'dualmind.highscore';
 
 const NAME_MAX = 14;
-const NAME_MIN = 3;   // PlayFab display-name minimum
+const NAME_MIN = 3;   // also enforced by the server's rename endpoint
 
 /**
  * Nicknames are public, so block the obvious offensive ones (App Review
@@ -185,134 +183,54 @@ class LocalProvider implements Provider {
 }
 
 /* ------------------------------------------------------------------ */
-/*  PLAYFAB PROVIDER (client REST only — public Title ID, no secrets)  */
+/*  CLOUDFLARE PROVIDER (our Pages Function at functions/api/scores.ts)  */
 /* ------------------------------------------------------------------ */
-
-interface EntityKey { Id: string; Type: string; }
-interface Session { ticket: string; token: string; entity: EntityKey; }
-
-class PlayFabError extends Error {
-  constructor(readonly code: string, msg: string, readonly status: number) { super(msg); }
-}
 
 /** Thrown by setName when the nickname can't be used; message is player-facing. */
 export class NameError extends Error {}
 
-class PlayFabProvider implements Provider {
+class CloudflareProvider implements Provider {
   readonly global = true;
-  private readonly base: string;
-  private readonly titleId: string;
-  private session: Promise<Session> | null = null;
-  /** Name already pushed this session — avoids a profile write per run. */
-  private pushedName = '';
 
-  constructor(titleId: string) {
-    this.titleId = titleId;
-    this.base = `https://${titleId}.playfabapi.com`;
-  }
+  constructor(private readonly api: string) {}
 
-  private async post(path: string, body: unknown, headers: Record<string, string> = {}): Promise<any> {
-    const res = await fetch(this.base + path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
+  /** POST a score / PUT a rename; maps the server's name errors to NameError. */
+  private async send(method: 'POST' | 'PUT', body: unknown): Promise<void> {
+    const res = await fetch(this.api, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new PlayFabError(json?.error ?? '', json?.errorMessage || `PlayFab ${path} ${res.status}`, res.status);
-    }
-    return json.data;
+    if (res.ok) return;
+    const d = await res.json().catch(() => ({})) as { error?: string };
+    if (d.error === 'name_taken') throw new NameError('That name is taken');
+    if (d.error === 'bad_name') throw new NameError('That name is not allowed');
+    throw new Error(d.error || `${method} ${res.status}`);
   }
 
-  /** Anonymous, device-based login — cached for the app session. */
-  private login(uid: string): Promise<Session> {
-    if (!this.session) {
-      this.session = this.post('/Client/LoginWithCustomID', {
-        TitleId: this.titleId,
-        CustomId: uid,
-        CreateAccount: true
-      })
-        .then(d => ({
-          ticket: d.SessionTicket as string,
-          token: d.EntityToken.EntityToken as string,
-          entity: { Id: d.EntityToken.Entity.Id as string, Type: d.EntityToken.Entity.Type as string }
-        }))
-        .catch(e => { this.session = null; throw e; });
-    }
-    return this.session;
-  }
-
-  /** Run an authed call; one re-login if the session/token expired (24h). */
-  private async withSession<T>(uid: string, fn: (s: Session) => Promise<T>): Promise<T> {
-    try {
-      return await fn(await this.login(uid));
-    } catch (e) {
-      if (!(e instanceof PlayFabError) || e.status !== 401) throw e;
-      this.session = null;
-      this.pushedName = '';
-      return fn(await this.login(uid));
-    }
-  }
-
-  private async pushName(name: string, s: Session): Promise<void> {
-    if (name === this.pushedName) return;
-    if (name.length < NAME_MIN) throw new NameError(`Name needs at least ${NAME_MIN} characters`);
-    if (isOffensive(name)) throw new NameError('That name is not allowed');
-    try {
-      await this.post('/Client/UpdateUserTitleDisplayName', { DisplayName: name }, { 'X-Authorization': s.ticket });
-      this.pushedName = name;
-    } catch (e) {
-      if (e instanceof PlayFabError && e.code === 'NameNotAvailable') throw new NameError('That name is taken');
-      if (e instanceof PlayFabError && e.status === 400) throw new NameError('That name is not allowed');
-      throw e;
-    }
-  }
-
-  async submit(uid: string, name: string, score: number, _level: number): Promise<void> {
-    await this.withSession(uid, async s => {
-      /* the name is cosmetic — never lose the score over it */
-      await this.pushName(name, s).catch(() => {});
-      /* the statistic's Score column aggregates with Max: lower values are ignored */
-      await this.post('/Statistic/UpdateStatistics', {
-        Entity: s.entity,
-        Statistics: [{ Name: STAT_NAME, Scores: [String(score)] }]
-      }, { 'X-EntityToken': s.token });
-    });
+  async submit(uid: string, name: string, score: number, level: number): Promise<void> {
+    await this.send('POST', { uid, name, score, level });
   }
 
   async setName(uid: string, name: string): Promise<void> {
-    await this.withSession(uid, s => this.pushName(name, s));
+    if (name.length < NAME_MIN) throw new NameError(`Name needs at least ${NAME_MIN} characters`);
+    if (isOffensive(name)) throw new NameError('That name is not allowed');
+    await this.send('PUT', { uid, name });
   }
 
   async top(count: number, uid: string): Promise<LbRow[]> {
-    return this.withSession(uid, async s => {
-      const auth = { 'X-EntityToken': s.token };
-      const toRow = (e: any): LbRow => ({
-        rank: e.Rank ?? 0,
-        name: e.DisplayName || 'Anonymous',
-        score: parseInt(e.Scores?.[0] ?? '0', 10) || 0,
-        you: e.Entity?.Id === s.entity.Id
-      });
-
-      const d = await this.post('/Leaderboard/GetLeaderboard', {
-        LeaderboardName: STAT_NAME,
-        StartingPosition: 1,
-        PageSize: Math.min(count, 100)
-      }, auth);
-      const rows = ((d?.Rankings ?? []) as any[]).map(toRow);
-
-      /* player is ranked below the visible top — pin their own row at the end */
-      if (!rows.some(r => r.you)) {
-        const me = await this.post('/Leaderboard/GetLeaderboardAroundEntity', {
-          LeaderboardName: STAT_NAME,
-          Entity: s.entity,
-          MaxSurroundingEntries: 1
-        }, auth).catch(() => null);
-        const mine = ((me?.Rankings ?? []) as any[]).map(toRow).find(r => r.you);
-        if (mine) rows.push(mine);
-      }
-      return rows;
-    });
+    const res = await fetch(`${this.api}?uid=${encodeURIComponent(uid)}&limit=${Math.min(count, 100)}`);
+    if (!res.ok) throw new Error(`top ${res.status}`);
+    const d = await res.json() as {
+      rows?: LbRow[];
+      you?: { rank: number; name: string; score: number } | null;
+    };
+    const rows = d.rows ?? [];
+    /* player is ranked below the visible top — pin their own row at the end */
+    if (d.you && !rows.some(r => r.you)) {
+      rows.push({ rank: d.you.rank, name: d.you.name, score: d.you.score, you: true });
+    }
+    return rows;
   }
 }
 
@@ -335,7 +253,7 @@ class Leaderboard {
   private uid = '';
   private name = '';
   private provider!: Provider;
-  /** Always written; the board shown when PlayFab is unreachable. */
+  /** Always written; the board shown when the global board is unreachable. */
   private local = new LocalProvider();
   /** Last top() had to fall back to the local board. */
   private offline = false;
@@ -350,9 +268,9 @@ class Leaderboard {
     localStorage.setItem(UID_KEY, this.uid);
     this.name = localStorage.getItem(NAME_KEY) || '';
 
-    const env = (import.meta.env.VITE_PLAYFAB_TITLE_ID as string | undefined)?.trim();
-    const titleId = env || DEFAULT_PLAYFAB_TITLE_ID;
-    this.provider = titleId.toLowerCase() === 'local' ? this.local : new PlayFabProvider(titleId);
+    const env = import.meta.env.VITE_LB_API as string | undefined;
+    const api = (env === undefined ? DEFAULT_API : env).trim();
+    this.provider = !api || api.toLowerCase() === 'local' ? this.local : new CloudflareProvider(api);
 
     /* iOS app: Game Center sign-in at launch (Apple shows its own banner).
        Optional — declining it changes nothing in the game. */

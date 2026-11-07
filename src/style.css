@@ -201,7 +201,7 @@ canvas {
    The menu uses a flex-column layout instead (see MENU SCREEN). ── */
 #hud-best-banner, #hud-score, #hud-combo,
 #hud-ghost, #hud-bullet,
-#joystick-left, #joystick-right,
+#joystick-left, #joystick-right, #joystick-single,
 #ghost-alert, #bullet-alert {
   position: absolute;
 }
@@ -1029,6 +1029,30 @@ canvas {
   background: rgba(255, 0, 153, 0.03);
 }
 
+/* ONE HAND: a single centred stick — one thumb drives both dots, so showing
+   two rings would tell the player to use two. Centred on (200, 590). */
+#joystick-single {
+  left: 156px;
+  top: 546px;
+  border: 1.5px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* Only the pair for the active control mode is on screen. `.mode-advanced`
+   is set on #game-hud by UIManager.showHUD(). */
+#game-hud:not(.mode-advanced) #joystick-left,
+#game-hud:not(.mode-advanced) #joystick-right,
+#game-hud.mode-advanced       #joystick-single { display: none; }
+
+/* It drives both dots, so it belongs to neither colour — split the knob
+   between the two so the mirrored coupling reads at a glance. */
+#joystick-single .joystick-knob {
+  background: linear-gradient(90deg,
+    rgba(0, 232, 255, 0.30) 0%, rgba(0, 232, 255, 0.30) 50%,
+    rgba(255, 0, 153, 0.30) 50%, rgba(255, 0, 153, 0.30) 100%);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.12);
+}
+
 .joystick-knob {
   position: absolute;
   width: 28px;
@@ -1071,6 +1095,11 @@ canvas {
 .intro-demo.mode-advanced #joystick-right .joystick-knob {
   animation-direction: normal;
   animation-delay: -0.8s;
+}
+
+/* The single stick demos the slide directly — there is nothing to mirror. */
+.intro-demo #joystick-single .joystick-knob {
+  animation-direction: normal;
 }
 
 
@@ -1322,6 +1351,10 @@ canvas {
   overflow-y: auto;
   scrollbar-width: none;
   pointer-events: auto;
+  /* The global board returns far more rows than the old local one ever did, so
+     the list genuinely scrolls. Fade the bottom edge: without it the clipped
+     row at the boundary reads as a broken layout rather than "more below". */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 32px), transparent);
 }
 #lb-list::-webkit-scrollbar { display: none; }
 
@@ -1387,3 +1420,13 @@ canvas {
   color: var(--text-faint);
   white-space: normal;   /* wraps — overrides the global nowrap */
 }
+
+/* ═══════════════════════════════════════════
+   HOW-TO SHEET — mode-aware control rows
+   `.mode-one-hand` is set on #howto-ui from the
+   persisted CONTROL setting before the sheet opens.
+═══════════════════════════════════════════ */
+
+#howto-ui .howto-one { display: none; }
+#howto-ui.mode-one-hand .howto-two { display: none; }
+#howto-ui.mode-one-hand .howto-one { display: flex; }

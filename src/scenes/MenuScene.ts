@@ -47,7 +47,7 @@ export class MenuScene extends Phaser.Scene {
     };
 
     /* ---- how-to sheet (overlays the menu, doesn't replace it) ---- */
-    uiManager.onShowHowto = () => { sfx.init(); uiManager.showHowto(); };
+    uiManager.onShowHowto = () => { sfx.init(); uiManager.showHowto(this.twoHands); };
     uiManager.onHideHowto = () => uiManager.hideHowto();
 
     /* ---- settings ---- */
