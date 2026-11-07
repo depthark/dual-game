@@ -65,6 +65,28 @@ const GC_LEADERBOARD_ID = 'dualmind.highscore';
 const NAME_MAX = 14;
 const NAME_MIN = 3;   // PlayFab display-name minimum
 
+/**
+ * Nicknames are public, so block the obvious offensive ones (App Review
+ * guideline 1.2 — user-generated content needs filtering). Names are folded
+ * first (case, accents, common digit/symbol swaps, separators), so "F_u.c-k"
+ * and "5h1t" are caught. Unambiguous stems match anywhere in the name; short
+ * words that also live inside harmless names ("Sussex", "Dickens", "Grape")
+ * only match the whole name. Deliberately coarse: anything that slips through
+ * is removed on request (contact on the support page).
+ */
+const BLOCKED_ANYWHERE = [
+  'fuck', 'shit', 'cunt', 'bitch', 'whore', 'slut', 'pussy', 'penis', 'vagina',
+  'porn', 'nazi', 'hitler', 'nigg', 'retard', 'kurva', 'kokot', 'jebat', 'hovno'
+];
+const BLOCKED_WHOLE = ['sex', 'dick', 'cock', 'rape', 'fag', 'tits', 'ass', 'pica', 'debil', 'piss'];
+const LEET: Record<string, string> = { '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '!': 'i' };
+
+function isOffensive(name: string): boolean {
+  const folded = name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[013457@$!]/g, c => LEET[c]).replace(/[^a-z]/g, '');
+  return BLOCKED_ANYWHERE.some(w => folded.includes(w)) || BLOCKED_WHOLE.includes(folded);
+}
+
 export interface LbRow {
   rank: number;
   name: string;
@@ -235,6 +257,7 @@ class PlayFabProvider implements Provider {
   private async pushName(name: string, s: Session): Promise<void> {
     if (name === this.pushedName) return;
     if (name.length < NAME_MIN) throw new NameError(`Name needs at least ${NAME_MIN} characters`);
+    if (isOffensive(name)) throw new NameError('That name is not allowed');
     try {
       await this.post('/Client/UpdateUserTitleDisplayName', { DisplayName: name }, { 'X-Authorization': s.ticket });
       this.pushedName = name;
@@ -370,7 +393,9 @@ class Leaderboard {
    * player-facing problem ("That name is taken") or null when it went through.
    */
   async setName(name: string): Promise<string | null> {
-    this.name = this.clean(name);
+    const clean = this.clean(name);
+    if (isOffensive(clean)) return 'That name is not allowed';
+    this.name = clean;
     localStorage.setItem(NAME_KEY, this.name);
     await this.local.setName(this.uid, this.displayName());
     try {
