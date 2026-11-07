@@ -1,48 +1,57 @@
 /**
- * Leaderboard — ultra-simple, no backend of our own, no paid API.
+ * Leaderboard — no backend of our own, no paid API.
  *
- * Three interchangeable providers behind one facade:
+ * The board players see is ONE global board on PlayFab, shared by every
+ * platform (iPhone/iPad app, web, Android). The player only types a nickname;
+ * there is no login screen.
  *
- *   • GameCenterProvider — iOS app (Capacitor native shell). The GLOBAL board,
- *                       backed by Apple Game Center: free, no account of ours,
- *                       the player's Game Center alias is their name. Talks to
- *                       the app-local `GameCenter` plugin
- *                       (ios/App/App/GameCenterPlugin.swift). If the player
- *                       isn't / won't sign in to Game Center, the facade falls
- *                       back to the local board — the game never blocks on it.
+ *   • PlayFabProvider — the global board. Anonymous, invisible device login
+ *                       (Client/LoginWithCustomID keyed by a random per-device
+ *                       UID), nickname = PlayFab title display name, score =
+ *                       the `HighScore` statistic (aggregation Max) feeding the
+ *                       linked `HighScore` leaderboard. Uses PlayFab's newer
+ *                       Statistics/Leaderboards ("Progression") APIs — titles
+ *                       created after 2024 can't use the legacy Client
+ *                       statistics endpoints (they fail with
+ *                       ProductDisabledForTitle). Client REST only: the Title
+ *                       ID is public, there is NO secret key in the bundle.
  *
- *   • LocalProvider   — web default. Stores the board in localStorage. Zero
- *                       setup, zero cost, fully offline. Per-device only.
+ *   • LocalProvider   — this device only (localStorage). Used when no Title ID
+ *                       is configured, and as the fallback whenever PlayFab
+ *                       can't be reached, so the game never blocks on it.
+ *                       Every score is also always written here.
  *
- *   • PlayFabProvider — opt-in global board. Activated by setting the public
- *                       Title ID in `VITE_PLAYFAB_TITLE_ID`. Uses PlayFab's
- *                       *client* REST API only (the Title ID is public — there
- *                       is NO secret key in the bundle and NO server of ours).
- *                       PlayFab's free tier covers anonymous device login +
- *                       leaderboards, so there is no paid API involved.
+ *   • Game Center     — iOS bonus, not a board of its own in the game: when the
+ *                       player is signed in, each score is also submitted to the
+ *                       Game Center leaderboard so it shows in Apple's Games app
+ *                       next to their friends. App-local plugin
+ *                       (ios/App/App/GameCenterPlugin.swift).
  *
- * ONE SHARED BOARD: both control setups (TWO HANDS / ONE HAND) rank on the same
- * leaderboard — a device owns exactly one row, its best score whichever way it
- * was played. This replaced the earlier split Normal/Advanced boards; the
- * migration in `LocalProvider.load()` folds any pre-split rows together.
+ * ONE SHARED BOARD: both control setups (TWO HANDS / ONE HAND) rank together —
+ * a device owns exactly one row, its best score whichever way it was played.
+ * `LocalProvider.load()` folds rows from the older split Normal/Advanced
+ * boards into one.
  *
  * Identity & anti-overwrite ("aby si ľudia neprepisovali skóre"):
- *   - Every device gets one stable UID (localStorage). All writes are keyed by
- *     that UID, so a device owns exactly one row — no duplicates.
- *   - Only a *higher* score is ever kept. Locally we max() on submit; on
- *     PlayFab the statistic must be configured with aggregation = Maximum so
- *     the server itself rejects any lower value.
+ *   - Every device gets one stable random UID (localStorage); all writes are
+ *     keyed by it, so a device owns exactly one row and can't touch another's.
+ *   - Only a *higher* score is ever kept: max() locally, and the PlayFab
+ *     statistic column aggregates with Max, so the server keeps the best.
+ *   - PlayFab enforces unique display names, so nobody can take your nickname.
  *
  * NOTE: a fully cheat-proof board needs server-side validation (PlayFab
- * CloudScript / a real backend). That is out of scope by request — this is the
- * "aspoň trochu secure" tier: stable identity + server-side max aggregation.
+ * CloudScript / a real backend). Out of scope by request — a determined
+ * player can still post a fake score from their own device.
  */
 
 import { Capacitor, registerPlugin } from '@capacitor/core';
 
-/** The single PlayFab statistic backing the board.
- *  (The old split board also wrote `HighScoreAdv`; that statistic is no longer
- *  read or written — see `.env.example` if you need to reconcile old scores.) */
+/** PlayFab title (public — it ships in every client, it is not a secret).
+ *  Override with VITE_PLAYFAB_TITLE_ID; set it to "local" for a device-only board. */
+const DEFAULT_PLAYFAB_TITLE_ID = '1095E4';
+
+/** PlayFab statistic + linked leaderboard (both named `HighScore`; the stat
+ *  has one column, "Score", aggregation Max). */
 const STAT_NAME = 'HighScore';
 
 const UID_KEY   = 'dual_uid';
@@ -131,6 +140,11 @@ class LocalProvider implements Provider {
     this.save(all);
   }
 
+  /** This device's best score on the local board (0 if none). */
+  best(uid: string): number {
+    return this.load().find(e => e.uid === uid)?.score ?? 0;
+  }
+
   async setName(uid: string, name: string): Promise<void> {
     const all = this.load();
     let changed = false;
@@ -152,34 +166,43 @@ class LocalProvider implements Provider {
 /*  PLAYFAB PROVIDER (client REST only — public Title ID, no secrets)  */
 /* ------------------------------------------------------------------ */
 
-interface Session { ticket: string; id: string; }
+interface EntityKey { Id: string; Type: string; }
+interface Session { ticket: string; token: string; entity: EntityKey; }
+
+class PlayFabError extends Error {
+  constructor(readonly code: string, msg: string, readonly status: number) { super(msg); }
+}
+
+/** Thrown by setName when the nickname can't be used; message is player-facing. */
+export class NameError extends Error {}
 
 class PlayFabProvider implements Provider {
   readonly global = true;
   private readonly base: string;
   private readonly titleId: string;
   private session: Promise<Session> | null = null;
+  /** Name already pushed this session — avoids a profile write per run. */
+  private pushedName = '';
 
   constructor(titleId: string) {
     this.titleId = titleId;
     this.base = `https://${titleId}.playfabapi.com`;
   }
 
-  private async post(path: string, body: unknown, auth?: string): Promise<any> {
+  private async post(path: string, body: unknown, headers: Record<string, string> = {}): Promise<any> {
     const res = await fetch(this.base + path, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(auth ? { 'X-Authorization': auth } : {})
-      },
+      headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify(body)
     });
     const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(json?.errorMessage || `PlayFab ${path} ${res.status}`);
+    if (!res.ok) {
+      throw new PlayFabError(json?.error ?? '', json?.errorMessage || `PlayFab ${path} ${res.status}`, res.status);
+    }
     return json.data;
   }
 
-  /** Anonymous, device-based login — cached for the session. */
+  /** Anonymous, device-based login — cached for the app session. */
   private login(uid: string): Promise<Session> {
     if (!this.session) {
       this.session = this.post('/Client/LoginWithCustomID', {
@@ -187,88 +210,99 @@ class PlayFabProvider implements Provider {
         CustomId: uid,
         CreateAccount: true
       })
-        .then(d => ({ ticket: d.SessionTicket as string, id: d.PlayFabId as string }))
+        .then(d => ({
+          ticket: d.SessionTicket as string,
+          token: d.EntityToken.EntityToken as string,
+          entity: { Id: d.EntityToken.Entity.Id as string, Type: d.EntityToken.Entity.Type as string }
+        }))
         .catch(e => { this.session = null; throw e; });
     }
     return this.session;
   }
 
-  private async pushName(name: string, ticket: string): Promise<void> {
-    if (!name || name.length < NAME_MIN) return;
+  /** Run an authed call; one re-login if the session/token expired (24h). */
+  private async withSession<T>(uid: string, fn: (s: Session) => Promise<T>): Promise<T> {
     try {
-      await this.post('/Client/UpdateUserTitleDisplayName', { DisplayName: name }, ticket);
-    } catch {
-      /* name may be rejected (taken / invalid) — keep the score regardless */
+      return await fn(await this.login(uid));
+    } catch (e) {
+      if (!(e instanceof PlayFabError) || e.status !== 401) throw e;
+      this.session = null;
+      this.pushedName = '';
+      return fn(await this.login(uid));
+    }
+  }
+
+  private async pushName(name: string, s: Session): Promise<void> {
+    if (name === this.pushedName) return;
+    if (name.length < NAME_MIN) throw new NameError(`Name needs at least ${NAME_MIN} characters`);
+    try {
+      await this.post('/Client/UpdateUserTitleDisplayName', { DisplayName: name }, { 'X-Authorization': s.ticket });
+      this.pushedName = name;
+    } catch (e) {
+      if (e instanceof PlayFabError && e.code === 'NameNotAvailable') throw new NameError('That name is taken');
+      if (e instanceof PlayFabError && e.status === 400) throw new NameError('That name is not allowed');
+      throw e;
     }
   }
 
   async submit(uid: string, name: string, score: number, _level: number): Promise<void> {
-    const s = await this.login(uid);
-    await this.pushName(name, s.ticket);
-    /* Server keeps the max when the statistic's aggregation = Maximum. */
-    await this.post('/Client/UpdatePlayerStatistics', {
-      Statistics: [{ StatisticName: STAT_NAME, Value: score }]
-    }, s.ticket);
+    await this.withSession(uid, async s => {
+      /* the name is cosmetic — never lose the score over it */
+      await this.pushName(name, s).catch(() => {});
+      /* the statistic's Score column aggregates with Max: lower values are ignored */
+      await this.post('/Statistic/UpdateStatistics', {
+        Entity: s.entity,
+        Statistics: [{ Name: STAT_NAME, Scores: [String(score)] }]
+      }, { 'X-EntityToken': s.token });
+    });
   }
 
   async setName(uid: string, name: string): Promise<void> {
-    const s = await this.login(uid);
-    await this.pushName(name, s.ticket);
+    await this.withSession(uid, s => this.pushName(name, s));
   }
 
   async top(count: number, uid: string): Promise<LbRow[]> {
-    const s = await this.login(uid);
-    const d = await this.post('/Client/GetLeaderboard', {
-      StatisticName: STAT_NAME,
-      StartPosition: 0,
-      MaxResultsCount: Math.min(count, 100)
-    }, s.ticket);
-    const rows = (d?.Leaderboard ?? []) as any[];
-    return rows.map(e => ({
-      rank: (e.Position ?? 0) + 1,
-      name: e.DisplayName || 'Anonymous',
-      score: e.StatValue ?? 0,
-      you: e.PlayFabId === s.id
-    }));
+    return this.withSession(uid, async s => {
+      const auth = { 'X-EntityToken': s.token };
+      const toRow = (e: any): LbRow => ({
+        rank: e.Rank ?? 0,
+        name: e.DisplayName || 'Anonymous',
+        score: parseInt(e.Scores?.[0] ?? '0', 10) || 0,
+        you: e.Entity?.Id === s.entity.Id
+      });
+
+      const d = await this.post('/Leaderboard/GetLeaderboard', {
+        LeaderboardName: STAT_NAME,
+        StartingPosition: 1,
+        PageSize: Math.min(count, 100)
+      }, auth);
+      const rows = ((d?.Rankings ?? []) as any[]).map(toRow);
+
+      /* player is ranked below the visible top — pin their own row at the end */
+      if (!rows.some(r => r.you)) {
+        const me = await this.post('/Leaderboard/GetLeaderboardAroundEntity', {
+          LeaderboardName: STAT_NAME,
+          Entity: s.entity,
+          MaxSurroundingEntries: 1
+        }, auth).catch(() => null);
+        const mine = ((me?.Rankings ?? []) as any[]).map(toRow).find(r => r.you);
+        if (mine) rows.push(mine);
+      }
+      return rows;
+    });
   }
 }
 
 /* ------------------------------------------------------------------ */
-/*  GAME CENTER PROVIDER (iOS native shell only)                       */
+/*  GAME CENTER (iOS bonus — mirrors scores to Apple's Games app)      */
 /* ------------------------------------------------------------------ */
 
-interface GcRow { rank: number; alias: string; score: number; you: boolean; }
-interface GcPlayer { authenticated: boolean; playerId: string; alias: string; }
-
 interface GameCenterPlugin {
-  authenticate(): Promise<GcPlayer>;
+  authenticate(): Promise<{ authenticated: boolean; playerId: string; alias: string }>;
   submitScore(o: { leaderboardId: string; score: number }): Promise<void>;
-  loadTop(o: { leaderboardId: string; count: number }): Promise<{ entries: GcRow[]; local?: GcRow }>;
 }
 
 const GameCenter = registerPlugin<GameCenterPlugin>('GameCenter');
-
-class GameCenterProvider implements Provider {
-  readonly global = true;
-
-  async submit(_uid: string, _name: string, score: number, _level: number): Promise<void> {
-    /* Game Center keeps the player's best (leaderboard type = Best score). */
-    await GameCenter.submitScore({ leaderboardId: GC_LEADERBOARD_ID, score });
-  }
-
-  /** The name is the player's Game Center alias — nothing to push. */
-  async setName(): Promise<void> {}
-
-  async top(count: number): Promise<LbRow[]> {
-    const { entries, local } = await GameCenter.loadTop({ leaderboardId: GC_LEADERBOARD_ID, count });
-    const rows = entries.map(e => ({ rank: e.rank, name: e.alias, score: e.score, you: e.you }));
-    /* player is ranked below the visible top — pin their own row at the end */
-    if (local && !rows.some(r => r.you)) {
-      rows.push({ rank: local.rank, name: local.alias, score: local.score, you: true });
-    }
-    return rows;
-  }
-}
 
 /* ------------------------------------------------------------------ */
 /*  FACADE                                                             */
@@ -278,9 +312,11 @@ class Leaderboard {
   private uid = '';
   private name = '';
   private provider!: Provider;
-  /** Always kept: the fallback board, and the offline copy of every score. */
+  /** Always written; the board shown when PlayFab is unreachable. */
   private local = new LocalProvider();
-  private gcAlias = '';
+  /** Last top() had to fall back to the local board. */
+  private offline = false;
+  private gameCenter = false;
   private inited = false;
 
   init(): void {
@@ -291,26 +327,18 @@ class Leaderboard {
     localStorage.setItem(UID_KEY, this.uid);
     this.name = localStorage.getItem(NAME_KEY) || '';
 
-    const titleId = (import.meta.env.VITE_PLAYFAB_TITLE_ID as string | undefined)?.trim();
-    this.provider = titleId ? new PlayFabProvider(titleId) : this.local;
+    const env = (import.meta.env.VITE_PLAYFAB_TITLE_ID as string | undefined)?.trim();
+    const titleId = env || DEFAULT_PLAYFAB_TITLE_ID;
+    this.provider = titleId.toLowerCase() === 'local' ? this.local : new PlayFabProvider(titleId);
 
-    /* iOS app: sign in to Game Center at launch (Apple shows its own banner /
-       sign-in sheet). Until — or unless — that succeeds, the local board is
-       used, so a declined or offline sign-in never blocks the game. */
+    /* iOS app: Game Center sign-in at launch (Apple shows its own banner).
+       Optional — declining it changes nothing in the game. */
     if (Capacitor.getPlatform() === 'ios' && Capacitor.isPluginAvailable('GameCenter')) {
       GameCenter.authenticate()
-        .then(p => {
-          if (!p.authenticated) return;
-          this.gcAlias = p.alias;
-          this.provider = new GameCenterProvider();
-          this.onChange?.();
-        })
+        .then(p => { this.gameCenter = p.authenticated; })
         .catch(e => console.warn('[leaderboard] Game Center sign-in failed', e));
     }
   }
-
-  /** Fired when the active board switches (e.g. Game Center sign-in landed). */
-  onChange?: () => void;
 
   private genUid(): string {
     const c = globalThis.crypto as Crypto | undefined;
@@ -324,55 +352,64 @@ class Leaderboard {
   }
 
   isGlobal(): boolean { return this.provider.global; }
+  getName(): string { return this.name; }
 
   /** Footer line under the board ('' = nothing to say). */
   statusHint(): string {
-    if (this.provider.global) return '';
-    return Capacitor.getPlatform() === 'ios'
-      ? 'Sign in to Game Center to rank globally'
-      : 'Scores saved on this device';
+    if (!this.provider.global) return 'Scores saved on this device';
+    return this.offline ? 'Offline — showing scores from this device' : '';
   }
-  /** Game Center owns the name (the player's alias) — not editable in-game. */
-  isNameEditable(): boolean { return !(this.provider instanceof GameCenterProvider); }
-  getName(): string { return this.isNameEditable() ? this.name : this.gcAlias; }
 
   /** Name actually shown on the board — falls back to a UID-derived handle. */
   displayName(): string {
     return this.name || ('Player-' + this.uid.replace(/[^a-zA-Z0-9]/g, '').slice(-4).toUpperCase());
   }
 
-  /** Persist a new name and propagate it to existing entries (all modes). */
-  async setName(name: string): Promise<void> {
+  /**
+   * Persist a new name and push it to the global board. Resolves to a
+   * player-facing problem ("That name is taken") or null when it went through.
+   */
+  async setName(name: string): Promise<string | null> {
     this.name = this.clean(name);
     localStorage.setItem(NAME_KEY, this.name);
+    await this.local.setName(this.uid, this.displayName());
     try {
       await this.provider.setName(this.uid, this.displayName());
+      return null;
     } catch (e) {
+      if (e instanceof NameError) return e.message;
       console.warn('[leaderboard] setName failed', e);
+      return null;   // offline — it is pushed again with the next score
     }
   }
 
   async submit(score: number, level: number): Promise<void> {
     if (score <= 0) return;
+    await this.local.submit(this.uid, this.displayName(), score, level);
+    if (this.gameCenter) {
+      GameCenter.submitScore({ leaderboardId: GC_LEADERBOARD_ID, score })
+        .catch(e => console.warn('[leaderboard] Game Center submit failed', e));
+    }
+    if (this.provider === this.local) return;
     try {
-      if (this.provider !== this.local) {
-        /* local copy too, so the board survives a later Game Center sign-out */
-        await this.local.submit(this.uid, this.displayName(), score, level);
-      }
-      await this.provider.submit(this.uid, this.displayName(), score, level);
+      /* Send the device's best, not just this run: the server keeps the max
+         anyway, and this way runs played offline (or before the global board
+         existed) catch up on the next online game. */
+      const best = Math.max(score, this.local.best(this.uid));
+      await this.provider.submit(this.uid, this.displayName(), best, level);
     } catch (e) {
       console.warn('[leaderboard] submit failed', e);
     }
   }
 
   async top(count: number): Promise<LbRow[]> {
-    const p = this.provider;
-    if (!(p instanceof GameCenterProvider)) return p.top(count, this.uid);
+    this.offline = false;
+    if (this.provider === this.local) return this.local.top(count, this.uid);
     try {
-      return await p.top(count);
+      return await this.provider.top(count, this.uid);
     } catch (e) {
-      /* offline / Game Center hiccup — show this device's scores instead */
-      console.warn('[leaderboard] Game Center load failed', e);
+      console.warn('[leaderboard] global board unavailable', e);
+      this.offline = true;
       return this.local.top(count, this.uid);
     }
   }

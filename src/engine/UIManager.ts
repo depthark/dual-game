@@ -421,19 +421,13 @@ class UIManager {
   /*  LEADERBOARD                                                         */
   /* ------------------------------------------------------------------ */
 
-  showLeaderboard(name: string, global: boolean, nameEditable = true): void {
+  showLeaderboard(name: string, global: boolean): void {
     this.hideAll();
     this.lbNameInput.value = name;
-    /* Game Center: the name is the player's alias, owned by Apple */
-    this.lbNameInput.readOnly = !nameEditable;
     this.lbScope.textContent = global ? 'GLOBAL' : 'THIS DEVICE';
     this.lbList.innerHTML = '';
     this.lbStatus.textContent = 'Loading…';
     this.leaderboardUI.classList.remove('ui-hidden');
-  }
-
-  isLeaderboardOpen(): boolean {
-    return !this.leaderboardUI.classList.contains('ui-hidden');
   }
 
   renderLeaderboard(rows: LbRow[], hint: string): void {

@@ -101,21 +101,29 @@ be changed after the fact.
 - **Android** — not part of this pipeline; see `package.json`'s `cap:android`
   for local dev only.
 
-## Game Center leaderboard
+## Leaderboard backends
 
-The iOS app's global board is Apple Game Center — free, no backend of ours.
+**PlayFab (the in-game global board).** Title `1095E4` ("My Game" in the
+PlayFab Game Manager, Development mode — free up to 1,000 lifetime players,
+then Pay-as-you-go). Setup is listed in `.env.example`. Client-only REST; no
+secret key ships in the app.
+
+**Game Center (iOS bonus).** Scores are mirrored to Apple's Games app; nothing
+in-game reads it.
 
 - App Store Connect → DUAL: One Mind → Game Center: leaderboard **"High Score"**,
-  ID **`dualmind.highscore`** (Best score, sorted high → low, integer). Created
-  via the ASC API; id `f89293f7-b83d-40b0-a6ab-a7ec8b5995b2`.
+  ID **`dualmind.highscore`** (Best score, sorted high → low, integer), ASC id
+  `f89293f7-b83d-40b0-a6ab-a7ec8b5995b2`. Game Center is enabled on version 1.0.
 - Native side: `ios/App/App/GameCenterPlugin.swift` (app-local Capacitor plugin,
   JS name `GameCenter`), registered in `MainViewController.swift` (the
   storyboard root). Entitlement `com.apple.developer.game-center` in
   `App.entitlements`.
-- JS side: `GameCenterProvider` in `src/engine/Leaderboard.ts`. If the player
-  doesn't sign in to Game Center, the app silently uses the local board.
-- **First release:** the leaderboard must be added to the app version
-  (App Store version → Game Center section) so it ships with it. Until the
-  app is live, leaderboard data is sandbox-only (TestFlight testers see each
-  other's scores).
+- **First release:** the leaderboard version has to go into the same review
+  submission as the app version. Until the app is live, Game Center data is
+  sandbox-only.
 
+## App Store screenshots
+
+iPhone 6.7" (1320×2868), iPhone 6.5" (1242×2688) and iPad 13" (2064×2752) sets
+are uploaded in App Store Connect. They are real captures of the web build at
+those viewports (the 400×640 canvas letterboxed exactly as on device).
