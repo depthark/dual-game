@@ -421,16 +421,22 @@ class UIManager {
   /*  LEADERBOARD                                                         */
   /* ------------------------------------------------------------------ */
 
-  showLeaderboard(name: string, global: boolean): void {
+  showLeaderboard(name: string, global: boolean, nameEditable = true): void {
     this.hideAll();
     this.lbNameInput.value = name;
+    /* Game Center: the name is the player's alias, owned by Apple */
+    this.lbNameInput.readOnly = !nameEditable;
     this.lbScope.textContent = global ? 'GLOBAL' : 'THIS DEVICE';
     this.lbList.innerHTML = '';
     this.lbStatus.textContent = 'Loading…';
     this.leaderboardUI.classList.remove('ui-hidden');
   }
 
-  renderLeaderboard(rows: LbRow[], global: boolean): void {
+  isLeaderboardOpen(): boolean {
+    return !this.leaderboardUI.classList.contains('ui-hidden');
+  }
+
+  renderLeaderboard(rows: LbRow[], hint: string): void {
     this.lbList.innerHTML = '';
 
     if (rows.length === 0) {
@@ -438,7 +444,7 @@ class UIManager {
       empty.className = 'lb-empty';
       empty.textContent = 'No scores yet — be the first!';
       this.lbList.appendChild(empty);
-      this.lbStatus.textContent = '';
+      this.lbStatus.textContent = hint;
       return;
     }
 
@@ -462,9 +468,9 @@ class UIManager {
       this.lbList.appendChild(row);
     }
 
-    /* Player-facing copy only — the PlayFab setup hint that used to live here
-       is a developer concern and was visible in App Store screenshots. */
-    this.lbStatus.textContent = global ? '' : 'Scores saved on this device';
+    /* Player-facing copy only — no developer/setup hints (they showed up in
+       App Store screenshots once). */
+    this.lbStatus.textContent = hint;
   }
 
   setLeaderboardError(msg: string): void {

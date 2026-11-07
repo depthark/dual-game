@@ -1,10 +1,18 @@
 /**
  * Leaderboard — ultra-simple, no backend of our own, no paid API.
  *
- * Two interchangeable providers behind one facade:
+ * Three interchangeable providers behind one facade:
  *
- *   • LocalProvider   — default. Stores the board in localStorage. Zero setup,
- *                       zero cost, fully offline. Per-device only (not global).
+ *   • GameCenterProvider — iOS app (Capacitor native shell). The GLOBAL board,
+ *                       backed by Apple Game Center: free, no account of ours,
+ *                       the player's Game Center alias is their name. Talks to
+ *                       the app-local `GameCenter` plugin
+ *                       (ios/App/App/GameCenterPlugin.swift). If the player
+ *                       isn't / won't sign in to Game Center, the facade falls
+ *                       back to the local board — the game never blocks on it.
+ *
+ *   • LocalProvider   — web default. Stores the board in localStorage. Zero
+ *                       setup, zero cost, fully offline. Per-device only.
  *
  *   • PlayFabProvider — opt-in global board. Activated by setting the public
  *                       Title ID in `VITE_PLAYFAB_TITLE_ID`. Uses PlayFab's
@@ -30,6 +38,8 @@
  * "aspoň trochu secure" tier: stable identity + server-side max aggregation.
  */
 
+import { Capacitor, registerPlugin } from '@capacitor/core';
+
 /** The single PlayFab statistic backing the board.
  *  (The old split board also wrote `HighScoreAdv`; that statistic is no longer
  *  read or written — see `.env.example` if you need to reconcile old scores.) */
@@ -38,6 +48,10 @@ const STAT_NAME = 'HighScore';
 const UID_KEY   = 'dual_uid';
 const NAME_KEY  = 'dual_name';
 const LOCAL_KEY = 'dual_lb';
+
+/** Game Center leaderboard ID — must match App Store Connect → Game Center
+ *  (Best score, sorted high → low). */
+const GC_LEADERBOARD_ID = 'dualmind.highscore';
 
 const NAME_MAX = 14;
 const NAME_MIN = 3;   // PlayFab display-name minimum
@@ -220,6 +234,43 @@ class PlayFabProvider implements Provider {
 }
 
 /* ------------------------------------------------------------------ */
+/*  GAME CENTER PROVIDER (iOS native shell only)                       */
+/* ------------------------------------------------------------------ */
+
+interface GcRow { rank: number; alias: string; score: number; you: boolean; }
+interface GcPlayer { authenticated: boolean; playerId: string; alias: string; }
+
+interface GameCenterPlugin {
+  authenticate(): Promise<GcPlayer>;
+  submitScore(o: { leaderboardId: string; score: number }): Promise<void>;
+  loadTop(o: { leaderboardId: string; count: number }): Promise<{ entries: GcRow[]; local?: GcRow }>;
+}
+
+const GameCenter = registerPlugin<GameCenterPlugin>('GameCenter');
+
+class GameCenterProvider implements Provider {
+  readonly global = true;
+
+  async submit(_uid: string, _name: string, score: number, _level: number): Promise<void> {
+    /* Game Center keeps the player's best (leaderboard type = Best score). */
+    await GameCenter.submitScore({ leaderboardId: GC_LEADERBOARD_ID, score });
+  }
+
+  /** The name is the player's Game Center alias — nothing to push. */
+  async setName(): Promise<void> {}
+
+  async top(count: number): Promise<LbRow[]> {
+    const { entries, local } = await GameCenter.loadTop({ leaderboardId: GC_LEADERBOARD_ID, count });
+    const rows = entries.map(e => ({ rank: e.rank, name: e.alias, score: e.score, you: e.you }));
+    /* player is ranked below the visible top — pin their own row at the end */
+    if (local && !rows.some(r => r.you)) {
+      rows.push({ rank: local.rank, name: local.alias, score: local.score, you: true });
+    }
+    return rows;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  FACADE                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -227,6 +278,9 @@ class Leaderboard {
   private uid = '';
   private name = '';
   private provider!: Provider;
+  /** Always kept: the fallback board, and the offline copy of every score. */
+  private local = new LocalProvider();
+  private gcAlias = '';
   private inited = false;
 
   init(): void {
@@ -238,8 +292,25 @@ class Leaderboard {
     this.name = localStorage.getItem(NAME_KEY) || '';
 
     const titleId = (import.meta.env.VITE_PLAYFAB_TITLE_ID as string | undefined)?.trim();
-    this.provider = titleId ? new PlayFabProvider(titleId) : new LocalProvider();
+    this.provider = titleId ? new PlayFabProvider(titleId) : this.local;
+
+    /* iOS app: sign in to Game Center at launch (Apple shows its own banner /
+       sign-in sheet). Until — or unless — that succeeds, the local board is
+       used, so a declined or offline sign-in never blocks the game. */
+    if (Capacitor.getPlatform() === 'ios' && Capacitor.isPluginAvailable('GameCenter')) {
+      GameCenter.authenticate()
+        .then(p => {
+          if (!p.authenticated) return;
+          this.gcAlias = p.alias;
+          this.provider = new GameCenterProvider();
+          this.onChange?.();
+        })
+        .catch(e => console.warn('[leaderboard] Game Center sign-in failed', e));
+    }
   }
+
+  /** Fired when the active board switches (e.g. Game Center sign-in landed). */
+  onChange?: () => void;
 
   private genUid(): string {
     const c = globalThis.crypto as Crypto | undefined;
@@ -253,7 +324,17 @@ class Leaderboard {
   }
 
   isGlobal(): boolean { return this.provider.global; }
-  getName(): string { return this.name; }
+
+  /** Footer line under the board ('' = nothing to say). */
+  statusHint(): string {
+    if (this.provider.global) return '';
+    return Capacitor.getPlatform() === 'ios'
+      ? 'Sign in to Game Center to rank globally'
+      : 'Scores saved on this device';
+  }
+  /** Game Center owns the name (the player's alias) — not editable in-game. */
+  isNameEditable(): boolean { return !(this.provider instanceof GameCenterProvider); }
+  getName(): string { return this.isNameEditable() ? this.name : this.gcAlias; }
 
   /** Name actually shown on the board — falls back to a UID-derived handle. */
   displayName(): string {
@@ -274,14 +355,26 @@ class Leaderboard {
   async submit(score: number, level: number): Promise<void> {
     if (score <= 0) return;
     try {
+      if (this.provider !== this.local) {
+        /* local copy too, so the board survives a later Game Center sign-out */
+        await this.local.submit(this.uid, this.displayName(), score, level);
+      }
       await this.provider.submit(this.uid, this.displayName(), score, level);
     } catch (e) {
       console.warn('[leaderboard] submit failed', e);
     }
   }
 
-  top(count: number): Promise<LbRow[]> {
-    return this.provider.top(count, this.uid);
+  async top(count: number): Promise<LbRow[]> {
+    const p = this.provider;
+    if (!(p instanceof GameCenterProvider)) return p.top(count, this.uid);
+    try {
+      return await p.top(count);
+    } catch (e) {
+      /* offline / Game Center hiccup — show this device's scores instead */
+      console.warn('[leaderboard] Game Center load failed', e);
+      return this.local.top(count, this.uid);
+    }
   }
 }
 

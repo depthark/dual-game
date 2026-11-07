@@ -34,11 +34,11 @@ export default defineConfig({
         /* Cache-first for everything — game has no server data */
         runtimeCaching: [],
 
-        /* The privacy policy is a real standalone page, not part of the game
+        /* The privacy + support pages are real standalone pages, not part of the game
            SPA. Without this the SW's index.html navigate-fallback would serve
            the game at /privacy for anyone who already has the SW installed —
            and that URL is what App Store Connect points at. */
-        navigateFallbackDenylist: [/^\/privacy/],
+        navigateFallbackDenylist: [/^\/privacy/, /^\/support/],
 
         /* Activate new SW immediately without waiting */
         skipWaiting: true,

@@ -100,7 +100,22 @@ be changed after the fact.
 
 - **Android** — not part of this pipeline; see `package.json`'s `cap:android`
   for local dev only.
-- **Leaderboards / Game Center** — DUAL has no leaderboard today, only a
-  per-device `localStorage` high score. Out of scope for this release
-  pipeline; would need its own Capacitor plugin + App Store Connect Game
-  Center setup.
+
+## Game Center leaderboard
+
+The iOS app's global board is Apple Game Center — free, no backend of ours.
+
+- App Store Connect → DUAL: One Mind → Game Center: leaderboard **"High Score"**,
+  ID **`dualmind.highscore`** (Best score, sorted high → low, integer). Created
+  via the ASC API; id `f89293f7-b83d-40b0-a6ab-a7ec8b5995b2`.
+- Native side: `ios/App/App/GameCenterPlugin.swift` (app-local Capacitor plugin,
+  JS name `GameCenter`), registered in `MainViewController.swift` (the
+  storyboard root). Entitlement `com.apple.developer.game-center` in
+  `App.entitlements`.
+- JS side: `GameCenterProvider` in `src/engine/Leaderboard.ts`. If the player
+  doesn't sign in to Game Center, the app silently uses the local board.
+- **First release:** the leaderboard must be added to the app version
+  (App Store version → Game Center section) so it ships with it. Until the
+  app is live, leaderboard data is sandbox-only (TestFlight testers see each
+  other's scores).
+

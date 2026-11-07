@@ -63,7 +63,12 @@ export class MenuScene extends Phaser.Scene {
     uiManager.onShowLeaderboard = () => this.openLeaderboard();
     uiManager.onHideLeaderboard = () => this.backToMenu(hiScore, hiLevel);
     uiManager.onNameChange = (name) => {
+      if (!leaderboard.isNameEditable()) return;
       leaderboard.setName(name).then(() => this.refreshLeaderboard());
+    };
+    /* Game Center sign-in can land while the board is already open */
+    leaderboard.onChange = () => {
+      if (uiManager.isLeaderboardOpen()) this.openLeaderboard();
     };
 
     /* ---- audio / haptics ---- */
@@ -80,7 +85,7 @@ export class MenuScene extends Phaser.Scene {
 
   private openLeaderboard(): void {
     sfx.init();
-    uiManager.showLeaderboard(leaderboard.getName(), leaderboard.isGlobal());
+    uiManager.showLeaderboard(leaderboard.getName(), leaderboard.isGlobal(), leaderboard.isNameEditable());
     this.refreshLeaderboard();
   }
 
@@ -93,9 +98,8 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private refreshLeaderboard(): void {
-    const global = leaderboard.isGlobal();
     leaderboard.top(20)
-      .then(rows => uiManager.renderLeaderboard(rows, global))
+      .then(rows => uiManager.renderLeaderboard(rows, leaderboard.statusHint()))
       .catch(() => {
         uiManager.setLeaderboardError('Could not load leaderboard — check your connection');
       });
