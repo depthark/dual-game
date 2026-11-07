@@ -4,6 +4,7 @@ import { sfx } from '../engine/SoundEngine';
 import { haptics } from '../engine/Haptics';
 import { uiManager } from '../engine/UIManager';
 import { leaderboard } from '../engine/Leaderboard';
+import { store } from '../engine/Store';
 
 /**
  * Home screen and everything reachable from it: the how-to sheet, settings,
@@ -51,13 +52,29 @@ export class MenuScene extends Phaser.Scene {
     uiManager.onHideHowto = () => uiManager.hideHowto();
 
     /* ---- settings ---- */
-    uiManager.onShowSettings = () => { sfx.init(); uiManager.showSettings(); };
+    uiManager.onShowSettings = () => {
+      sfx.init();
+      this.refreshFullGame();
+      uiManager.showSettings();
+    };
     uiManager.onHideSettings = () => this.backToMenu(hiScore, hiLevel);
     uiManager.onSelectControl = (twoHands) => {
       this.twoHands = twoHands;
       localStorage.setItem(CONTROL_KEY, twoHands ? '1' : '0');
       uiManager.setControlMode(twoHands);
     };
+
+    /* ---- full game (iOS) — buy / restore from Settings ---- */
+    uiManager.onBuyFull = () => {
+      uiManager.setFullGame(true, false, store.price, 'OPENING APP STORE…');
+      store.purchase().then(r => this.refreshFullGame(
+        r === 'pending' ? 'WAITING FOR APPROVAL' : r === 'failed' ? 'PURCHASE FAILED' : ''));
+    };
+    uiManager.onRestoreFull = () => {
+      uiManager.setFullGame(true, store.isFull(), store.price, 'RESTORING…');
+      store.restore().then(full => this.refreshFullGame(full ? '' : 'NOTHING TO RESTORE'));
+    };
+    store.onChange = () => this.refreshFullGame();
 
     /* ---- leaderboard ---- */
     uiManager.onShowLeaderboard = () => this.openLeaderboard();
@@ -76,6 +93,10 @@ export class MenuScene extends Phaser.Scene {
       uiManager.setHapticsLabel(muted);
       if (!muted) haptics.pass();  // let the player feel what they just enabled
     };
+  }
+
+  private refreshFullGame(note = ''): void {
+    uiManager.setFullGame(store.sells(), store.isFull(), store.price, note);
   }
 
   private openLeaderboard(): void {
