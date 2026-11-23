@@ -19,7 +19,7 @@
  */
 import { Capacitor, registerPlugin } from '@capacitor/core';
 
-interface StoreStatus { unlocked: boolean; price?: string }
+interface StoreStatus { unlocked: boolean; price?: string; environment?: string }
 
 interface StorePlugin {
   status(): Promise<StoreStatus>;
@@ -43,6 +43,11 @@ class Store {
   private listeners: Listener[] = [];
   /** Localised price from the App Store, e.g. "0,95 €". */
   price = '';
+  /** Where this copy came from: "production" (App Store), "sandbox"
+   *  (TestFlight), "xcode", or "unknown". Set once `ready` resolves. */
+  environment = 'unknown';
+  /** Resolves after the first native status call (or at once off iOS). */
+  ready: Promise<void> = Promise.resolve();
 
   init(): void {
     if (import.meta.env.DEV && /[?&]ads\b/.test(location.search)) { this.fake(); return; }
@@ -51,9 +56,10 @@ class Store {
 
     this.adFree = localStorage.getItem(AD_FREE_KEY) === '1';
     Native.addListener('unlockChanged', d => { if (d.unlocked) this.setAdFree(true); });
-    Native.status()
+    this.ready = Native.status()
       .then(s => {
         if (s.price) this.price = s.price;
+        if (s.environment) this.environment = s.environment;
         if (s.unlocked) this.setAdFree(true);
       })
       .catch(e => console.warn('[store] status failed', e));

@@ -62,15 +62,33 @@ public class StorePlugin: CAPPlugin, CAPBridgedPlugin {
         return p
     }
 
+    /// "production" (App Store download), "sandbox" (TestFlight), "xcode",
+    /// or "unknown" (iOS 15, or the App Store was unreachable). Ads.ts only
+    /// requests real ads in production, so testers never click live ads.
+    static func environment() async -> String {
+        guard #available(iOS 16.0, *) else { return "unknown" }
+        guard let result = try? await AppTransaction.shared,
+              case .verified(let app) = result else { return "unknown" }
+        switch app.environment {
+        case .production: return "production"
+        case .sandbox: return "sandbox"
+        case .xcode: return "xcode"
+        default: return "unknown"
+        }
+    }
+
     private func statusPayload() async -> [String: Any] {
-        var out: [String: Any] = ["unlocked": await StorePlugin.ownsFullGame()]
+        var out: [String: Any] = [
+            "unlocked": await StorePlugin.ownsFullGame(),
+            "environment": await StorePlugin.environment()
+        ]
         if let p = try? await product() { out["price"] = p.displayPrice }
         return out
     }
 
     // MARK: - plugin methods
 
-    /// { unlocked, price? }
+    /// { unlocked, environment, price? }
     @objc func status(_ call: CAPPluginCall) {
         Task { call.resolve(await self.statusPayload()) }
     }

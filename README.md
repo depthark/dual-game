@@ -266,9 +266,9 @@ paywall; anyone who bought it in 1.1 is simply ad-free.
 | Format | Interstitial only, image (no video) — no banners, nothing during a run |
 | When | Only when the player leaves the game-over card (TRY AGAIN / BACK TO HOME) |
 | First ad | Not before the player has finished `FREE_RUNS` = 5 runs |
-| Spacing | At least `RUNS_BETWEEN` = 3 runs **and** `MIN_GAP_MS` = 3 minutes since the last ad |
+| Spacing | At least `RUNS_BETWEEN` = 4 runs **and** `MIN_GAP_MS` = 5 minutes since the last ad (kept across app restarts); AdMob also caps the unit at 1 per user per 3 minutes |
 | Targeting | Always non-personalized (`npa`); no App Tracking Transparency prompt, no IDFA |
-| Content | Max rating "General"; sensitive categories blocked in the AdMob console |
+| Content | Max rating "General" (app and AdMob account); all 13 sensitive categories blocked (dating, sexual content, gambling, alcohol, social casino, get-rich-quick, …). AdMob's 200-subcategory block limit is spent on 10 general groups (apparel, entertainment, beauty, business, cars, electronics, dining, family, food, jobs) |
 | Consent | Google UMP form before the first request where the law needs it (EEA, UK, CH); Settings → ADS → AD PRIVACY reopens it |
 
 ```mermaid
@@ -282,25 +282,28 @@ flowchart TD
   I --> P["preload interstitial (npa)"]
   P --> GO["run ends → game-over card"]
   GO --> T["player taps TRY AGAIN / BACK TO HOME"]
-  T --> D{"runs ≥ 5 and<br/>≥ 3 runs and ≥ 3 min<br/>since last ad?"}
+  T --> D{"runs ≥ 5 and<br/>≥ 4 runs and ≥ 5 min<br/>since last ad?"}
   D -- no --> NEXT["continue at once"]
   D -- yes --> AD["show interstitial"] --> NEXT
   AD --> P
 ```
 
-- **Ad unit:** set `VITE_ADMOB_INTERSTITIAL_IOS` when building for release.
-  Without it the build requests Google's demo ads (`isTesting`), which is what
-  TestFlight builds should do.
-- **App ID:** the Xcode build setting `ADMOB_APP_ID` (feeds
-  `GADApplicationIdentifier` in `Info.plist`); it defaults to Google's demo
-  app ID.
+- **AdMob IDs:** publisher `pub-6215838866873174`; app
+  `ca-app-pub-6215838866873174~5156023015` (Xcode build setting
+  `ADMOB_APP_ID`, feeds `GADApplicationIdentifier`); interstitial "Game over"
+  `ca-app-pub-6215838866873174/9668102768` (`LIVE_INTERSTITIAL` in `Ads.ts`).
+  `public/app-ads.txt` authorises the publisher on dual-game.pages.dev.
+- **Live vs test ads:** decided at runtime. Real ads only when StoreKit's
+  `AppTransaction.environment` is `production` (an App Store download);
+  TestFlight (`sandbox`) and Xcode installs get Google's demo ads, so testers
+  can never click live ads. `VITE_ADMOB_TEST=1` forces demo ads in any build.
 - **Buying while ads are on:** `Store.subscribe` turns ads off immediately.
   Ask to Buy, Family Sharing and other devices arrive through
   `Transaction.updates`.
 - **Restore:** Settings → ADS → RESTORE runs `AppStore.sync()`.
 - `localStorage` keys: `dual_full` (cached "ads removed", name kept from
   1.1), `dual_runs` (finished runs), `dual_last_ad_run` (value of
-  `dual_runs` at the last ad).
+  `dual_runs` at the last ad), `dual_last_ad_at` (time of the last ad).
 
 ## Privacy
 

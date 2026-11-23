@@ -19,9 +19,9 @@
  *     (dating, gambling, sexual, …) are additionally blocked in the AdMob
  *     console, and the ad unit is image-only (no video)
  *
- * Ad unit: `VITE_ADMOB_INTERSTITIAL_IOS` at build time. Without it the build
- * requests Google's test ads, so TestFlight builds never earn or risk invalid
- * traffic. The app ID lives in the Xcode build setting ADMOB_APP_ID.
+ * Ad unit: LIVE_INTERSTITIAL below, used only when StoreKit says this copy
+ * came from the App Store ("production"); TestFlight and Xcode installs get
+ * Google's demo ads. The app ID is the Xcode build setting ADMOB_APP_ID.
  *
  * Dev: `?ads` in the browser fakes the whole thing (a 1.5 s overlay instead of
  * an ad) so the timing rules can be exercised without a device.
@@ -32,22 +32,26 @@ import {
 } from '@capacitor-community/admob';
 import { store } from './Store';
 
+/** AdMob "Game over" interstitial (image only, capped server-side at
+ *  1 per user per 3 minutes). App ID: ADMOB_APP_ID build setting. */
+const LIVE_INTERSTITIAL = 'ca-app-pub-6215838866873174/9668102768';
 /** Google's public demo interstitial — always fills, never pays. */
 const TEST_INTERSTITIAL = 'ca-app-pub-3940256099942544/4411468910';
 
+/* "Just sometimes": the owner wants ads to be rare. */
 export const FREE_RUNS    = 5;
-export const RUNS_BETWEEN = 3;
-export const MIN_GAP_MS   = 3 * 60 * 1000;
+export const RUNS_BETWEEN = 4;
+export const MIN_GAP_MS   = 5 * 60 * 1000;
 
 const RUNS_KEY    = 'dual_runs';          // finished runs, ever
 const LAST_AD_KEY = 'dual_last_ad_run';   // value of dual_runs at the last ad
+const LAST_AD_AT  = 'dual_last_ad_at';    // ms timestamp of the last ad
 
 class Ads {
   private enabled = false;
   private ready = false;
   private loading = false;
   private fake = false;
-  private lastAdAt = 0;                   // ms — per session, deliberately
   private adId = TEST_INTERSTITIAL;
   private testing = true;
   /** UMP wants a "privacy choices" entry point (Settings → AD PRIVACY). */
@@ -61,8 +65,16 @@ class Ads {
     if (Capacitor.getPlatform() !== 'ios' || !Capacitor.isPluginAvailable('AdMob')) return;
     if (store.isAdFree()) return;
 
-    const unit = (import.meta.env.VITE_ADMOB_INTERSTITIAL_IOS as string | undefined)?.trim();
-    if (unit) { this.adId = unit; this.testing = false; }
+    /* Real ads only for App Store downloads. TestFlight / Xcode installs
+       get Google's demo ads, so testers can never click live ads (which
+       AdMob treats as invalid traffic). VITE_ADMOB_TEST=1 forces demo ads. */
+    await store.ready;
+    if (store.isAdFree()) return;
+    const forceTest = import.meta.env.VITE_ADMOB_TEST === '1';
+    if (!forceTest && store.environment === 'production') {
+      this.adId = LIVE_INTERSTITIAL;
+      this.testing = false;
+    }
 
     store.subscribe(adFree => { if (adFree) this.enabled = false; });
 
@@ -99,7 +111,7 @@ class Ads {
   async breakpoint(): Promise<void> {
     if (!this.due()) return;
     localStorage.setItem(LAST_AD_KEY, String(this.runs()));
-    this.lastAdAt = Date.now();
+    localStorage.setItem(LAST_AD_AT, String(Date.now()));
     this.ready = false;
 
     if (this.fake) { await this.fakeAd(); this.ready = true; return; }
@@ -133,7 +145,7 @@ class Ads {
     const lastRun = parseInt(localStorage.getItem(LAST_AD_KEY) || '0', 10);
     return runs >= FREE_RUNS
       && runs - lastRun >= RUNS_BETWEEN
-      && Date.now() - this.lastAdAt >= MIN_GAP_MS;
+      && Date.now() - parseInt(localStorage.getItem(LAST_AD_AT) || '0', 10) >= MIN_GAP_MS;
   }
 
   private runs(): number {
