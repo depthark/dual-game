@@ -14,6 +14,7 @@
     "assets:generate": "capacitor-assets generate --ios --android --iconBackgroundColor '#05050a' --iconBackgroundColorDark '#05050a' --splashBackgroundColor '#05050a' --splashBackgroundColorDark '#05050a'"
   },
   "dependencies": {
+    "@capacitor-community/admob": "8.3.0",
     "@capacitor/android": "^8.3.1",
     "@capacitor/cli": "^8.3.1",
     "@capacitor/core": "^8.3.1",
